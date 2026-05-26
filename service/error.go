@@ -84,6 +84,12 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 }
 
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
+	// Rewrite vendor quota/usage-limit 400 to 429 on every return path so the
+	// default retry logic picks them up. Defer covers all early returns below.
+	defer func() {
+		UpgradeQuotaErrorTo429(newApiErr)
+	}()
+
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
 	responseBody, err := io.ReadAll(resp.Body)
@@ -128,6 +134,34 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 		newApiErr.Err = buildErrWithBody(newApiErr.Error())
 	}
 	return
+}
+
+// retryableQuotaErrorPatternsOn400 are substrings of upstream 400 error
+// messages that semantically represent quota/rate-limit exhaustion (HTTP 429)
+// instead of a real client request error. Several vendors (Anthropic, jimi,
+// kelly, anyfast relays, etc.) emit these as HTTP 400 even though the next
+// retry to a different channel would have a good chance of succeeding.
+//
+// UpgradeQuotaErrorTo429 rewrites the local status to 429 so that the default
+// shouldRetry() logic in controller/relay.go triggers a channel retry. The
+// upstream HTTP body is left untouched; only the in-memory NewAPIError is
+// modified.
+var retryableQuotaErrorPatternsOn400 = []string{
+	"specified API usage limits", // Anthropic / jimi-style: "You have reached your specified API usage limits."
+	"credit balance is too low",  // Anthropic: account credit exhausted
+}
+
+func UpgradeQuotaErrorTo429(newApiErr *types.NewAPIError) {
+	if newApiErr == nil || newApiErr.StatusCode != http.StatusBadRequest {
+		return
+	}
+	msg := newApiErr.Error()
+	for _, p := range retryableQuotaErrorPatternsOn400 {
+		if strings.Contains(msg, p) {
+			newApiErr.StatusCode = http.StatusTooManyRequests
+			return
+		}
+	}
 }
 
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {
