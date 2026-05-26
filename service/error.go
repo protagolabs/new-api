@@ -162,6 +162,34 @@ func UpgradeQuotaErrorTo429(newApiErr *types.NewAPIError) {
 	}
 }
 
+// upstreamForcedRetrySignatures are upstream error messages that should bypass
+// our local channel-affinity SkipRetryOnFailure guard and force a retry to
+// another channel. These represent upstream-side stale-state failures the
+// client cannot do anything about, but a sibling channel could serve.
+var upstreamForcedRetrySignatures = []string{
+	// Upstream newapi (nested) returned 403 because its own affinity cache
+	// is stuck on a channel that has since been disabled.
+	// Without bypass, our SkipRetryOnFailure=true would propagate this 403
+	// to the client even though our other channels are healthy.
+	"channel selected by channel affinity has been disabled",
+}
+
+// IsUpstreamForcedRetryError returns true when the error message matches a
+// known upstream stale-state signature. Used by shouldRetry to override
+// ShouldSkipRetryAfterChannelAffinityFailure.
+func IsUpstreamForcedRetryError(newApiErr *types.NewAPIError) bool {
+	if newApiErr == nil {
+		return false
+	}
+	msg := newApiErr.Error()
+	for _, s := range upstreamForcedRetrySignatures {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
 func ResetStatusCode(newApiErr *types.NewAPIError, statusCodeMappingStr string) {
 	if newApiErr == nil {
 		return
