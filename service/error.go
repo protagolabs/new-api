@@ -174,7 +174,10 @@ var upstreamForcedRetrySignatures = []string{
 	// Without bypass, our SkipRetryOnFailure=true would propagate this 403
 	// to the client even though our other channels are healthy.
 	"channel selected by channel affinity has been disabled",
-	// Nested upstream returned this 403 for a disabled affinity-pinned channel.
+	// Nested upstream returned a disabled-affinity-channel 403
+	// (MsgDistributorChannelDisabled). Defense-in-depth: force retry to a
+	// sibling instead of propagating; our distributor fails over locally but
+	// older nested instances may not.
 	"This channel has been disabled",
 	// Bedrock ValidationException for anthropic-beta flags it doesn't recognize
 	// (client sent prompt-caching-scope-* / redact-thinking-* etc.). Channel-

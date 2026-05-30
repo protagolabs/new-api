@@ -934,6 +934,15 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 	case types.RelayFormatClaude:
 		responseData = data
+		// Native Claude passthrough streams the upstream bytes verbatim, which
+		// leaks the real upstream model name when model_mapping rewrote the
+		// request (e.g. claude-opus-4-8-sp -> claude-jupiter-v1-p). Restore the
+		// caller-facing model name in the response (top-level "model" and the
+		// message_start "message.model") so clients never see the upstream alias.
+		if info.IsModelMapped && info.UpstreamModelName != "" && info.UpstreamModelName != info.OriginModelName {
+			responseData = []byte(strings.ReplaceAll(string(responseData),
+				`"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`))
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
