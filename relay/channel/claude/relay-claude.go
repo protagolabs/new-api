@@ -759,6 +759,13 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 				data = patchClaudeMessageDeltaUsageData(data, buildMessageDeltaPatchUsage(&claudeResponse, claudeInfo))
 			}
 		}
+		// Restore the caller-facing model name on the streamed message_start
+		// chunk when model_mapping rewrote the request (mirrors the non-stream
+		// path in HandleClaudeResponseData). The upstream alias only appears in
+		// message_start; ReplaceAll on other chunks is a harmless no-op.
+		if info.IsModelMapped && info.UpstreamModelName != "" && info.UpstreamModelName != info.OriginModelName {
+			data = strings.ReplaceAll(data, `"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`)
+		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		response := StreamResponseClaude2OpenAI(&claudeResponse)
