@@ -103,10 +103,17 @@ func Distribute() func(c *gin.Context) {
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil {
 						if preferred.Status != common.ChannelStatusEnabled {
-							if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
-								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
-								return
-							}
+							// Affinity points at a disabled channel — the pin is stale and
+							// can never serve. Evict it and fall through to normal channel
+							// selection so the request fails over to a healthy channel
+							// (and re-pins on success via RecordChannelAffinity below).
+							// skip_retry_on_failure is intentionally ignored here: it
+							// governs stickiness across transient *request* failures, not
+							// an administratively disabled channel, where hard-failing the
+							// request just strands the session on a dead channel.
+							service.ClearChannelAffinityPin(c)
+							common.SysLog(fmt.Sprintf("channel affinity pin points to disabled channel %d, evicted; failing over to a healthy channel", preferred.Id))
+							// channel stays nil → CacheGetRandomSatisfiedChannel below.
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)

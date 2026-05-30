@@ -172,6 +172,12 @@ var upstreamForcedRetrySignatures = []string{
 	// Without bypass, our SkipRetryOnFailure=true would propagate this 403
 	// to the client even though our other channels are healthy.
 	"channel selected by channel affinity has been disabled",
+	// Plain distributor disabled-channel 403 (MsgDistributorChannelDisabled,
+	// "This channel has been disabled") returned by a nested newapi whose
+	// affinity pinned a now-disabled channel. Defense-in-depth: force a retry
+	// to a sibling channel instead of propagating the 403. The patched
+	// distributor now fails over locally, but older nested instances may not.
+	"This channel has been disabled",
 }
 
 // IsUpstreamForcedRetryError returns true when the error message matches a
