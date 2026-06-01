@@ -111,6 +111,12 @@ var PreConsumedQuota = 500
 
 var RetryTimes = 0
 
+// RetryPriorityCycle: when true, the retry channel-selection wraps around to the
+// highest priority after exhausting all priority layers (priorities[retry % N])
+// instead of clamping to the lowest. Lets a request pinned (channel affinity) to
+// a low-priority channel still retry the higher-priority channels. Default off.
+var RetryPriorityCycle = false
+
 //var RootUserEmail = ""
 
 var IsMasterNode bool

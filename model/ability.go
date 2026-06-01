@@ -80,8 +80,13 @@ func getPriority(group string, model string, retry int) (int, error) {
 	// 确定要使用的优先级
 	var priorityToUse int
 	if retry >= len(priorities) {
-		// 如果重试次数大于优先级数，则使用最小的优先级
-		priorityToUse = priorities[len(priorities)-1]
+		if common.RetryPriorityCycle {
+			// 循环模式：超过优先级层数后环回最高层（priorities 已按 DESC 排序）
+			priorityToUse = priorities[retry%len(priorities)]
+		} else {
+			// 默认：如果重试次数大于优先级数，则使用最小的优先级
+			priorityToUse = priorities[len(priorities)-1]
+		}
 	} else {
 		priorityToUse = priorities[retry]
 	}
