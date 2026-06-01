@@ -149,7 +149,12 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	sort.Sort(sort.Reverse(sort.IntSlice(sortedUniquePriorities)))
 
 	if retry >= len(uniquePriorities) {
-		retry = len(uniquePriorities) - 1
+		if common.RetryPriorityCycle {
+			// 循环模式：超过优先级层数后环回最高层
+			retry = retry % len(uniquePriorities)
+		} else {
+			retry = len(uniquePriorities) - 1
+		}
 	}
 	targetPriority := int64(sortedUniquePriorities[retry])
 
