@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -192,9 +195,28 @@ func main() {
 	// Log startup success message
 	common.LogStartupSuccess(startTime, port)
 
-	err = server.Run(":" + port)
-	if err != nil {
-		common.FatalLog("failed to start HTTP server: " + err.Error())
+	// Graceful shutdown. newapi previously used gin's server.Run() which has no
+	// signal handling, so a rolling restart / SIGTERM RST'd every in-flight
+	// (streaming / agent / reasoning) request immediately. Now we run the server
+	// in a goroutine and, on SIGTERM/SIGINT, stop accepting new connections and
+	// drain in-flight requests within the K8s termination grace period (180s).
+	srv := &http.Server{Addr: ":" + port, Handler: server}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			common.FatalLog("failed to start HTTP server: " + err.Error())
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	common.SysLog("shutdown signal received, draining in-flight requests (up to 175s)...")
+	ctx, cancel := context.WithTimeout(context.Background(), 175*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		common.SysError("graceful shutdown timed out / failed: " + err.Error())
+	} else {
+		common.SysLog("graceful shutdown complete")
 	}
 }
 
