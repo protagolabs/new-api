@@ -785,7 +785,7 @@ func TestChannel(c *gin.Context) {
 var testAllChannelsLock sync.Mutex
 var testAllChannelsRunning bool = false
 
-func testAllChannels(notify bool) error {
+func testAllChannels(notify bool, onlyAutoDisabled bool) error {
 
 	testAllChannelsLock.Lock()
 	if testAllChannelsRunning {
@@ -812,6 +812,11 @@ func testAllChannels(notify bool) error {
 
 		for _, channel := range channels {
 			if channel.Status == common.ChannelStatusManuallyDisabled {
+				continue
+			}
+			// Scheduled run in only-auto-disabled mode: probe only auto-disabled
+			// channels (to recover them), skipping healthy enabled channels.
+			if onlyAutoDisabled && channel.Status != common.ChannelStatusAutoDisabled {
 				continue
 			}
 			isChannelEnabled := channel.Status == common.ChannelStatusEnabled
@@ -858,7 +863,8 @@ func testAllChannels(notify bool) error {
 }
 
 func TestAllChannels(c *gin.Context) {
-	err := testAllChannels(true)
+	// Manual "test all channels" always tests the full set (onlyAutoDisabled=false).
+	err := testAllChannels(true, false)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -886,8 +892,13 @@ func AutomaticallyTestChannels() {
 				frequency := operation_setting.GetMonitorSetting().AutoTestChannelMinutes
 				time.Sleep(time.Duration(int(math.Round(frequency))) * time.Minute)
 				common.SysLog(fmt.Sprintf("automatically test channels with interval %f minutes", frequency))
-				common.SysLog("automatically testing all channels")
-				_ = testAllChannels(false)
+				onlyAutoDisabled := operation_setting.GetMonitorSetting().AutoTestOnlyAutoDisabled
+				if onlyAutoDisabled {
+					common.SysLog("automatically testing auto-disabled channels only")
+				} else {
+					common.SysLog("automatically testing all channels")
+				}
+				_ = testAllChannels(false, onlyAutoDisabled)
 				common.SysLog("automatically channel test finished")
 				if !operation_setting.GetMonitorSetting().AutoTestChannelEnabled {
 					break
