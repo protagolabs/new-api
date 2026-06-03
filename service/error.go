@@ -193,6 +193,15 @@ var upstreamForcedRetrySignatures = []string{
 	// (e.g. ch363 claude-official, ch369 GCP) aren't flagged filter_anthropic_beta
 	// and surface this. Channel-specific → fail over to a sibling that accepts it.
 	"for the `anthropic-beta` header",
+	// Bedrock rejects requests using operations/features it doesn't support for a
+	// given model with 400 "ValidationException: Operation not allowed". Observed
+	// exclusively on Bedrock-backed nested channels (374/367/373) with newer
+	// models (claude-opus-4-8) whose Claude-Code requests use operations the
+	// Bedrock path doesn't accept, while the same request succeeds on a direct
+	// Anthropic sibling (ch363). Channel-specific → fail over instead of returning
+	// 400. NOTE: broader than the beta-flag signatures; if a future "Operation not
+	// allowed" turns out to be request-intrinsic (fails everywhere), revisit.
+	"Operation not allowed",
 }
 
 // IsUpstreamForcedRetryError returns true when the error message matches a
