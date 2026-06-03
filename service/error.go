@@ -186,6 +186,13 @@ var upstreamForcedRetrySignatures = []string{
 	// client gets the error even though a non-Bedrock sibling (e.g. GCP/direct)
 	// would serve the exact same request. Channel-specific → safe to fail over.
 	"invalid beta flag",
+	// Anthropic-style beta rejection: direct Anthropic / GCP Vertex backends
+	// reject unknown anthropic-beta values with 400 "Unexpected value(s) `...`
+	// for the `anthropic-beta` header". Same class as Bedrock's "invalid beta
+	// flag" but a different upstream wording; non-Bedrock claude channels
+	// (e.g. ch363 claude-official, ch369 GCP) aren't flagged filter_anthropic_beta
+	// and surface this. Channel-specific → fail over to a sibling that accepts it.
+	"for the `anthropic-beta` header",
 }
 
 // IsUpstreamForcedRetryError returns true when the error message matches a
