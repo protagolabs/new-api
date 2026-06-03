@@ -164,7 +164,7 @@ func UpgradeQuotaErrorTo429(newApiErr *types.NewAPIError) {
 
 // upstreamForcedRetrySignatures are upstream error messages that should bypass
 // our local channel-affinity SkipRetryOnFailure guard and force a retry to
-// another channel. These represent upstream-side stale-state failures the
+// another channel. These represent upstream-side, channel-specific failures the
 // client cannot do anything about, but a sibling channel could serve.
 var upstreamForcedRetrySignatures = []string{
 	// Upstream newapi (nested) returned 403 because its own affinity cache
@@ -178,6 +178,14 @@ var upstreamForcedRetrySignatures = []string{
 	// to a sibling channel instead of propagating the 403. The patched
 	// distributor now fails over locally, but older nested instances may not.
 	"This channel has been disabled",
+	// Bedrock-backed channels reject anthropic-beta flags they don't recognize
+	// with 400 "invalid beta flag". patched-9 strips unknown flags via the
+	// per-channel whitelist, but flags can still slip through when a nested
+	// gateway re-injects them downstream, or a Bedrock channel isn't flagged
+	// filter_anthropic_beta. 400 isn't retried by default, so without this the
+	// client gets the error even though a non-Bedrock sibling (e.g. GCP/direct)
+	// would serve the exact same request. Channel-specific → safe to fail over.
+	"invalid beta flag",
 }
 
 // IsUpstreamForcedRetryError returns true when the error message matches a
