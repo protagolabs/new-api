@@ -93,9 +93,22 @@ func SyncChannelCache(frequency int) {
 	}
 }
 
+// GetRandomSatisfiedChannel selects a channel for (group, model) at the given
+// retry priority tier. Thin wrapper preserving the original signature for all
+// callers that do not need moderation filtering.
 func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel, error) {
+	return GetRandomSatisfiedChannelFiltered(group, model, retry, false)
+}
+
+// GetRandomSatisfiedChannelFiltered is GetRandomSatisfiedChannel with an optional
+// exclusion of channels flagged dto.ChannelSettings.PerformsUpstreamModeration.
+// When excludeModeration is true and every candidate moderates, it falls back to
+// the unfiltered candidate set (with a warning) rather than failing the request.
+func GetRandomSatisfiedChannelFiltered(group string, model string, retry int, excludeModeration bool) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
+		// Memory cache is on in production; the DB-direct path ignores the
+		// moderation exclusion (best-effort) to avoid extra per-candidate queries.
 		return GetChannel(group, model, retry)
 	}
 
@@ -109,6 +122,24 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = group2model2channels[group][normalizedModel]
+	}
+
+	// Moderation routing: drop channels that perform upstream content moderation
+	// from the candidate set before priority/weight selection. Soft fallback: if
+	// this empties the set, keep the original candidates and log, so a sensitive
+	// prompt is never made completely unservable by this feature.
+	if excludeModeration && len(channels) > 0 {
+		filtered := make([]int, 0, len(channels))
+		for _, channelId := range channels {
+			if ch, ok := channelsIDM[channelId]; ok && !ch.GetSetting().PerformsUpstreamModeration {
+				filtered = append(filtered, channelId)
+			}
+		}
+		if len(filtered) == 0 {
+			common.SysLog(fmt.Sprintf("moderation-routing: all candidate channels for group=%s model=%s perform upstream moderation; falling back to normal selection", group, model))
+		} else {
+			channels = filtered
+		}
 	}
 
 	if len(channels) == 0 {

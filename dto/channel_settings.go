@@ -7,6 +7,11 @@ type ChannelSettings struct {
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	// PerformsUpstreamModeration marks a channel whose upstream rejects prompts
+	// containing sensitive words. When moderation_routing_setting matches a
+	// prompt, such channels are excluded from selection. omitempty keeps existing
+	// channel Setting blobs byte-identical when false.
+	PerformsUpstreamModeration bool `json:"performs_upstream_moderation,omitempty"`
 }
 
 type VertexKeyType string

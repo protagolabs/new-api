@@ -17,6 +17,10 @@ type RetryParam struct {
 	ModelName    string
 	Retry        *int
 	resetNextTry bool
+	// SkipModerationChannels excludes channels flagged
+	// dto.ChannelSettings.PerformsUpstreamModeration from selection (set when the
+	// prompt matched a moderation-routing word). Applied on every retry.
+	SkipModerationChannels bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -115,7 +119,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry)
+			channel, _ = model.GetRandomSatisfiedChannelFiltered(autoGroup, param.ModelName, priorityRetry, param.SkipModerationChannels)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -153,7 +157,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry())
+		channel, err = model.GetRandomSatisfiedChannelFiltered(param.TokenGroup, param.ModelName, param.GetRetry(), param.SkipModerationChannels)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

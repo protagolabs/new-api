@@ -99,7 +99,15 @@ func Distribute() func(c *gin.Context) {
 					}
 				}
 
-				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
+				// Moderation routing: if the prompt matches a configured word,
+				// exclude moderation channels from selection AND bypass any affinity
+				// pin (stickiness must not override the routing constraint).
+				skipModeration := service.PromptMatchesModerationSkipWords(c)
+				if skipModeration {
+					common.SetContextKey(c, constant.ContextKeySkipModerationChannels, true)
+				}
+
+				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found && !skipModeration {
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil {
 						if preferred.Status != common.ChannelStatusEnabled {
@@ -136,10 +144,11 @@ func Distribute() func(c *gin.Context) {
 
 				if channel == nil {
 					channel, selectGroup, err = service.CacheGetRandomSatisfiedChannel(&service.RetryParam{
-						Ctx:        c,
-						ModelName:  modelRequest.Model,
-						TokenGroup: usingGroup,
-						Retry:      common.GetPointer(0),
+						Ctx:                    c,
+						ModelName:              modelRequest.Model,
+						TokenGroup:             usingGroup,
+						Retry:                  common.GetPointer(0),
+						SkipModerationChannels: skipModeration,
 					})
 					if err != nil {
 						showGroup := usingGroup

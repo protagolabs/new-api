@@ -38,6 +38,12 @@ const (
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 
+	// ContextKeySkipModerationChannels is set by the distributor when the prompt
+	// matches a moderation-routing word; channel selection then excludes channels
+	// flagged with dto.ChannelSettings.PerformsUpstreamModeration. Carried so
+	// retries re-apply the same exclusion without re-scanning the body.
+	ContextKeySkipModerationChannels ContextKey = "skip_moderation_channels"
+
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
