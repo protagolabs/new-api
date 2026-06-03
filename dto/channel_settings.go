@@ -38,6 +38,7 @@ type ChannelOtherSettings struct {
 	AllowSafetyIdentifier                 bool          `json:"allow_safety_identifier,omitempty"`   // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
 	DisableStore                          bool          `json:"disable_store,omitempty"`             // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
 	AllowIncludeObfuscation               bool          `json:"allow_include_obfuscation,omitempty"` // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
+	FilterAnthropicBeta                   bool          `json:"filter_anthropic_beta,omitempty"`     // 是否按 bedrock_beta_setting 白名单过滤 anthropic-beta header（Bedrock 后端只认少数 beta flag，转发未知 flag 会 400 invalid beta flag）
 	AwsKeyType                            AwsKeyType    `json:"aws_key_type,omitempty"`
 	UpstreamModelUpdateCheckEnabled       bool          `json:"upstream_model_update_check_enabled,omitempty"`        // 是否检测上游模型更新
 	UpstreamModelUpdateAutoSyncEnabled    bool          `json:"upstream_model_update_auto_sync_enabled,omitempty"`    // 是否自动同步上游模型更新

@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -74,7 +75,16 @@ func CommonClaudeHeadersOperation(c *gin.Context, req *http.Header, info *relayc
 	// common headers operation
 	anthropicBeta := c.Request.Header.Get("anthropic-beta")
 	if anthropicBeta != "" {
-		req.Set("anthropic-beta", anthropicBeta)
+		// Bedrock-backed channels only accept a small set of beta flags; forwarding
+		// unknown ones (e.g. prompt-caching-scope-*, redact-thinking-*) trips
+		// "ValidationException: invalid beta flag". When FilterAnthropicBeta is set,
+		// keep only the flags present in the bedrock_beta_setting whitelist.
+		if info.ChannelOtherSettings.FilterAnthropicBeta {
+			anthropicBeta = operation_setting.FilterAnthropicBetaByWhitelist(anthropicBeta)
+		}
+		if anthropicBeta != "" {
+			req.Set("anthropic-beta", anthropicBeta)
+		}
 	}
 	model_setting.GetClaudeSettings().WriteHeaders(info.OriginModelName, req)
 }
