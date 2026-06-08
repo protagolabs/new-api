@@ -790,7 +790,20 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 		if common.DebugEnabled {
 			common.SysLog("claude response usage is not complete, maybe upstream error")
 		}
-		claudeInfo.Usage = service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, claudeInfo.Usage.PromptTokens)
+		// Stream interrupted / not finalized (e.g. client disconnect on a long
+		// stream, !Done): only the completion side is typically missing. Do NOT
+		// overwrite the whole Usage — that drops cache_read/cache_creation and
+		// prompt tokens already parsed from message_start (which came from the
+		// upstream and were forwarded to the client), causing undercounted
+		// billing. Estimate ONLY the missing fields and keep the parsed cache.
+		estimated := service.ResponseText2Usage(c, claudeInfo.ResponseText.String(), info.UpstreamModelName, claudeInfo.Usage.PromptTokens)
+		if claudeInfo.Usage.CompletionTokens == 0 {
+			claudeInfo.Usage.CompletionTokens = estimated.CompletionTokens
+		}
+		if claudeInfo.Usage.PromptTokens == 0 {
+			claudeInfo.Usage.PromptTokens = estimated.PromptTokens
+		}
+		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
 	}
 	if claudeInfo.Usage != nil {
 		claudeInfo.Usage.UsageSemantic = "anthropic"
