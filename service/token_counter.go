@@ -396,12 +396,26 @@ func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) 
 	return int(duration / 60 * 200 / 0.24), nil
 }
 
+// largeTokenizeThresholdBytes is the byte size above which CountTextToken skips
+// exact tiktoken encoding and falls back to cheap estimation. tiktoken Count()
+// is O(n) and pegs a CPU core on very large prompts (observed: oversized gpt-4.1
+// requests spiking newapi pods to the CPU limit). This count only feeds
+// pre-charge estimation; final billing uses the upstream-reported usage, so the
+// estimation error above the threshold is harmless. ~1 MiB ≈ 250k tokens.
+const largeTokenizeThresholdBytes = 1024 * 1024
+
 // CountTextToken 统计文本的token数量，仅OpenAI模型使用tokenizer，其余模型使用估算
 func CountTextToken(text string, model string) int {
 	if text == "" {
 		return 0
 	}
 	if common.IsOpenAITextModel(model) {
+		// Guard against tiktoken CPU blowups on oversized inputs: above the
+		// threshold use estimation instead of exact encoding (pre-charge only,
+		// final billing reads upstream usage).
+		if len(text) > largeTokenizeThresholdBytes {
+			return EstimateTokenByModel(model, text)
+		}
 		tokenEncoder := getTokenEncoder(model)
 		return getTokenNum(tokenEncoder, text)
 	} else {
