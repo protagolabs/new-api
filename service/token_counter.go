@@ -401,8 +401,9 @@ func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) 
 // is O(n) and pegs a CPU core on very large prompts (observed: oversized gpt-4.1
 // requests spiking newapi pods to the CPU limit). This count only feeds
 // pre-charge estimation; final billing uses the upstream-reported usage, so the
-// estimation error above the threshold is harmless. ~1 MiB ≈ 250k tokens.
-const largeTokenizeThresholdBytes = 1024 * 1024
+// estimation error above the threshold is harmless. ~256 KiB ≈ 64k tokens.
+// (lowered from 1 MiB: sub-MiB prompts ~767 KiB still pegged a core, see 2026-06-23).
+const largeTokenizeThresholdBytes = 256 * 1024
 
 // CountTextToken 统计文本的token数量，仅OpenAI模型使用tokenizer，其余模型使用估算
 func CountTextToken(text string, model string) int {
