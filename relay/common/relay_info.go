@@ -40,6 +40,13 @@ type ClaudeConvertInfo struct {
 
 	ToolCallBaseIndex      int
 	ToolCallMaxIndexOffset int
+
+	// OutputBuf accumulates converted output text (+ reasoning) so a final
+	// message_delta can carry a locally-counted output_tokens when the upstream
+	// OpenAI stream omits usage (e.g. OpenRouter-style gateways). MessageDeltaSent
+	// guards against emitting message_delta twice.
+	OutputBuf        string
+	MessageDeltaSent bool
 }
 
 type RerankerInfo struct {

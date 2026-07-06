@@ -242,6 +242,34 @@ func buildClaudeUsageFromOpenAIUsage(oaiUsage *dto.Usage) *dto.ClaudeUsage {
 	return usage
 }
 
+// appendFinalMessageDelta appends the terminal Anthropic `message_delta` event once.
+// It uses the upstream OpenAI usage when present; otherwise it synthesizes usage with
+// a locally-counted output_tokens from the accumulated output text. This keeps the
+// converted Claude stream spec-compliant (message_delta carries stop_reason + usage)
+// even when the OpenAI upstream omits usage (e.g. OpenRouter-style gateways) — so a
+// nested downstream (another newapi relaying /v1/messages) still gets output_tokens
+// instead of recording completion=0.
+func appendFinalMessageDelta(responses []*dto.ClaudeResponse, info *relaycommon.RelayInfo, oaiUsage *dto.Usage) []*dto.ClaudeResponse {
+	if info.ClaudeConvertInfo.MessageDeltaSent {
+		return responses
+	}
+	usage := buildClaudeUsageFromOpenAIUsage(oaiUsage)
+	if usage == nil {
+		usage = &dto.ClaudeUsage{
+			InputTokens:  info.GetEstimatePromptTokens(),
+			OutputTokens: CountTextToken(info.ClaudeConvertInfo.OutputBuf, info.UpstreamModelName),
+		}
+	}
+	info.ClaudeConvertInfo.MessageDeltaSent = true
+	return append(responses, &dto.ClaudeResponse{
+		Type:  "message_delta",
+		Usage: usage,
+		Delta: &dto.ClaudeMediaMessage{
+			StopReason: common.GetPointer[string](stopReasonOpenAI2Claude(info.FinishReason)),
+		},
+	})
+}
+
 func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamResponse, info *relaycommon.RelayInfo) []*dto.ClaudeResponse {
 	if info.ClaudeConvertInfo.Done {
 		return nil
@@ -408,15 +436,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 			if oaiUsage == nil {
 				oaiUsage = info.ClaudeConvertInfo.Usage
 			}
-			if oaiUsage != nil {
-				claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
-					Type:  "message_delta",
-					Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage),
-					Delta: &dto.ClaudeMediaMessage{
-						StopReason: common.GetPointer[string](stopReasonOpenAI2Claude(info.FinishReason)),
-					},
-				})
-			}
+			claudeResponses = appendFinalMessageDelta(claudeResponses, info, oaiUsage)
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type: "message_stop",
 			})
@@ -431,15 +451,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 		if info.ClaudeConvertInfo.Done {
 			stopOpenBlocks()
 			oaiUsage := info.ClaudeConvertInfo.Usage
-			if oaiUsage != nil {
-				claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
-					Type:  "message_delta",
-					Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage),
-					Delta: &dto.ClaudeMediaMessage{
-						StopReason: common.GetPointer[string](stopReasonOpenAI2Claude(info.FinishReason)),
-					},
-				})
-			}
+			claudeResponses = appendFinalMessageDelta(claudeResponses, info, oaiUsage)
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type: "message_stop",
 			})
@@ -508,6 +520,9 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 		} else {
 			reasoning := chosenChoice.Delta.GetReasoningContent()
 			textContent := chosenChoice.Delta.GetContentString()
+			// Accumulate output for a locally-counted output_tokens fallback when the
+			// upstream OpenAI stream omits usage (see appendFinalMessageDelta).
+			info.ClaudeConvertInfo.OutputBuf += reasoning + textContent
 			if reasoning != "" || textContent != "" {
 				if reasoning != "" {
 					if info.ClaudeConvertInfo.LastMessagesType != relaycommon.LastMessageTypeThinking {
@@ -562,15 +577,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 			if oaiUsage == nil {
 				oaiUsage = info.ClaudeConvertInfo.Usage
 			}
-			if oaiUsage != nil {
-				claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
-					Type:  "message_delta",
-					Usage: buildClaudeUsageFromOpenAIUsage(oaiUsage),
-					Delta: &dto.ClaudeMediaMessage{
-						StopReason: common.GetPointer[string](stopReasonOpenAI2Claude(info.FinishReason)),
-					},
-				})
-			}
+			claudeResponses = appendFinalMessageDelta(claudeResponses, info, oaiUsage)
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type: "message_stop",
 			})
