@@ -372,21 +372,6 @@ func getChannelAffinityContext(c *gin.Context) (string, int, bool) {
 	return key, ttlSeconds, true
 }
 
-// ClearChannelAffinityPin deletes the current request's affinity pin from the
-// cache. Used when the pinned channel turns out to be disabled and the request
-// must fail over: the stale pin is evicted so the next selection (and this one)
-// no longer resolves to the dead channel. No-op if no affinity key is set for
-// this request.
-func ClearChannelAffinityPin(c *gin.Context) {
-	cacheKey, _, ok := getChannelAffinityContext(c)
-	if !ok {
-		return
-	}
-	if _, err := getChannelAffinityCache().DeleteMany([]string{cacheKey}); err != nil {
-		common.SysError(fmt.Sprintf("channel affinity pin evict failed: key=%s err=%v", cacheKey, err))
-	}
-}
-
 func getChannelAffinityMeta(c *gin.Context) (channelAffinityMeta, bool) {
 	anyMeta, ok := c.Get(ginKeyChannelAffinityMeta)
 	if !ok {
