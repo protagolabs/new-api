@@ -239,6 +239,12 @@ func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest
 	if textRequest.Model == "" {
 		return nil, errors.New("field model is required")
 	}
+	// Bound user-supplied max token fields: they feed pre-consume quota math
+	// (tokens * ratio); an unbounded value overflows int32 and corrupts billing.
+	if lo.FromPtrOr(textRequest.MaxTokens, uint(0)) > math.MaxInt32/2 ||
+		lo.FromPtrOr(textRequest.MaxTokensToSample, uint(0)) > math.MaxInt32/2 {
+		return nil, errors.New("max_tokens is invalid")
+	}
 
 	//if textRequest.Stream {
 	//	relayInfo.IsStream = true
