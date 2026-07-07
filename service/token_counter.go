@@ -213,7 +213,7 @@ func EstimateRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *rela
 				return 0, fmt.Errorf("error getting audio duration: %v", err)
 			}
 			// 一分钟 1000 token，与 $price / minute 对齐
-			totalAudioToken += int(math.Round(math.Ceil(duration) / 60.0 * 1000))
+			totalAudioToken += common.QuotaFromFloat(math.Round(math.Ceil(duration) / 60.0 * 1000))
 		}
 		return totalAudioToken, nil
 	}
@@ -382,7 +382,7 @@ func CountAudioTokenInput(audioBase64 string, audioFormat string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(duration / 60 * 100 / 0.06), nil
+	return common.QuotaFromFloat(duration / 60 * 100 / 0.06), nil
 }
 
 func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) {
@@ -393,7 +393,7 @@ func CountAudioTokenOutput(audioBase64 string, audioFormat string) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	return int(duration / 60 * 200 / 0.24), nil
+	return common.QuotaFromFloat(duration / 60 * 200 / 0.24), nil
 }
 
 // largeTokenizeThresholdBytes is the byte size above which CountTextToken skips
