@@ -174,6 +174,17 @@ var upstreamForcedRetrySignatures = []string{
 	// Without bypass, our SkipRetryOnFailure=true would propagate this 403
 	// to the client even though our other channels are healthy.
 	"channel selected by channel affinity has been disabled",
+	// Nested upstream returned this 403 for a disabled affinity-pinned channel.
+	"This channel has been disabled",
+	// Bedrock ValidationException for anthropic-beta flags it doesn't recognize
+	// (client sent prompt-caching-scope-* / redact-thinking-* etc.). Channel-
+	// specific → failover to a non-Bedrock sibling succeeds.
+	"invalid beta flag",
+	// Anthropic/GCP style beta rejection: "Unexpected value(s) ... for the
+	// `anthropic-beta` header".
+	"for the `anthropic-beta` header",
+	// Bedrock 400 for opus operations it doesn't allow; failover to direct sibling.
+	"Operation not allowed",
 }
 
 // IsUpstreamForcedRetryError returns true when the error message matches a
