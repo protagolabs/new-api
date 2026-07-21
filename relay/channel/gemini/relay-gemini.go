@@ -1409,7 +1409,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 
 		response.Id = id
 		response.Created = createAt
-		response.Model = info.UpstreamModelName
+		response.Model = callerModelName(info)
 		if response.IsToolCall() {
 			finishReason = constant.FinishReasonToolCalls
 			if info.RelayFormat == types.RelayFormatClaude {
@@ -1549,7 +1549,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		return &usage, nil
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
-	fullTextResponse.Model = info.UpstreamModelName
+	fullTextResponse.Model = callerModelName(info)
 	usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, info.GetEstimatePromptTokens())
 
 	fullTextResponse.Usage = usage
@@ -1593,7 +1593,7 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	openAIResponse := dto.OpenAIEmbeddingResponse{
 		Object: "list",
 		Data:   make([]dto.OpenAIEmbeddingResponseItem, 0, len(geminiResponse.Embeddings)),
-		Model:  info.UpstreamModelName,
+		Model:  callerModelName(info),
 	}
 
 	for i, embedding := range geminiResponse.Embeddings {
