@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -16,6 +17,34 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// restoreMappedModelName rewrites the upstream (mapped) model name back to the
+// caller-requested name in a native Gemini response body, so model_mapping does
+// not leak the upstream alias via the modelVersion field (e.g.
+// gemini-3.1-flash-image -> gemini-3.1-flash-image-preview). No-op when the
+// request was not model-mapped. Mirrors the Claude adaptor's #3b response rewrite.
+func restoreMappedModelName(info *relaycommon.RelayInfo, body []byte) []byte {
+	if info != nil && info.IsModelMapped && info.UpstreamModelName != "" &&
+		info.UpstreamModelName != info.OriginModelName {
+		return []byte(strings.ReplaceAll(string(body),
+			`"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`))
+	}
+	return body
+}
+
+// callerModelName returns the model name to expose to the caller: the requested
+// (origin) name when model_mapping rewrote the request, otherwise the upstream
+// name. Used for constructed (non-passthrough) OpenAI-compat responses so they
+// don't leak the mapped upstream alias.
+func callerModelName(info *relaycommon.RelayInfo) string {
+	if info != nil && info.IsModelMapped && info.OriginModelName != "" {
+		return info.OriginModelName
+	}
+	if info != nil {
+		return info.UpstreamModelName
+	}
+	return ""
+}
 
 func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	defer service.CloseResponseBodyGracefully(resp)
@@ -42,6 +71,7 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 
+	responseBody = restoreMappedModelName(info, responseBody)
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return &usage, nil
@@ -82,7 +112,8 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 	helper.SetEventStreamHeaders(c)
 
 	return geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
-		err := helper.StringData(c, data)
+		// Restore caller-facing model name so streamed modelVersion doesn't leak the mapped upstream alias.
+		err := helper.StringData(c, string(restoreMappedModelName(info, []byte(data))))
 		if err != nil {
 			logger.LogError(c, "failed to write stream data: "+err.Error())
 			return false
