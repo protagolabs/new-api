@@ -115,6 +115,16 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			}
 		}
 		countClaudeStreamBillableTools(c, info, &claudeResponse)
+		// Restore the caller-facing model name on the streamed message_start
+		// chunk when model_mapping rewrote the request (mirrors the non-stream
+		// path in HandleClaudeResponseData). Runs after the message_start branch
+		// above refreshed UpstreamModelName from the upstream payload, so the
+		// name we replace is the one actually present in the body. The upstream
+		// alias only appears in message_start; ReplaceAll on other chunks is a
+		// harmless no-op.
+		if info.IsModelMapped && info.UpstreamModelName != "" && info.UpstreamModelName != info.OriginModelName {
+			data = strings.ReplaceAll(data, `"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`)
+		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		response := StreamResponseClaude2OpenAI(&claudeResponse)
@@ -249,6 +259,15 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		}
 	case types.RelayFormatClaude:
 		responseData = data
+		// Native Claude passthrough streams the upstream bytes verbatim, which
+		// leaks the real upstream model name when model_mapping rewrote the
+		// request (e.g. claude-opus-4-8-sp -> claude-jupiter-v1-p). Restore the
+		// caller-facing model name in the response (top-level "model" and the
+		// message_start "message.model") so clients never see the upstream alias.
+		if info.IsModelMapped && info.UpstreamModelName != "" && info.UpstreamModelName != info.OriginModelName {
+			responseData = []byte(strings.ReplaceAll(string(responseData),
+				`"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`))
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
