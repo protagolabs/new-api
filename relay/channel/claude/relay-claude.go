@@ -121,8 +121,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		// above refreshed UpstreamModelName from the upstream payload, so the
 		// name we replace is the one actually present in the body. The upstream
 		// alias only appears in message_start; ReplaceAll on other chunks is a
-		// harmless no-op.
-		if info.IsModelMapped && info.UpstreamModelName != "" && info.UpstreamModelName != info.OriginModelName {
+		// harmless no-op. ChannelMeta is nilable since rc.23 — guard it.
+		if info.ChannelMeta != nil && info.IsModelMapped && info.UpstreamModelName != "" &&
+			info.UpstreamModelName != info.OriginModelName {
 			data = strings.ReplaceAll(data, `"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`)
 		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
@@ -264,7 +265,10 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		// request (e.g. claude-opus-4-8-sp -> claude-jupiter-v1-p). Restore the
 		// caller-facing model name in the response (top-level "model" and the
 		// message_start "message.model") so clients never see the upstream alias.
-		if info.IsModelMapped && info.UpstreamModelName != "" && info.UpstreamModelName != info.OriginModelName {
+		// ChannelMeta (which carries IsModelMapped/UpstreamModelName) is a nilable
+		// embedded pointer since rc.23 — guard it as upstream does elsewhere.
+		if info.ChannelMeta != nil && info.IsModelMapped && info.UpstreamModelName != "" &&
+			info.UpstreamModelName != info.OriginModelName {
 			responseData = []byte(strings.ReplaceAll(string(responseData),
 				`"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`))
 		}

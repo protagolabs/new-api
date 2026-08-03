@@ -23,8 +23,10 @@ import (
 // not leak the upstream alias via the modelVersion field (e.g.
 // gemini-3.1-flash-image -> gemini-3.1-flash-image-preview). No-op when the
 // request was not model-mapped. Mirrors the Claude adaptor's #3b response rewrite.
+// ChannelMeta (carrying IsModelMapped/UpstreamModelName) is a nilable embedded
+// pointer since rc.23, so both helpers below must guard it before dereferencing.
 func restoreMappedModelName(info *relaycommon.RelayInfo, body []byte) []byte {
-	if info != nil && info.IsModelMapped && info.UpstreamModelName != "" &&
+	if info != nil && info.ChannelMeta != nil && info.IsModelMapped && info.UpstreamModelName != "" &&
 		info.UpstreamModelName != info.OriginModelName {
 		return []byte(strings.ReplaceAll(string(body),
 			`"`+info.UpstreamModelName+`"`, `"`+info.OriginModelName+`"`))
@@ -37,13 +39,17 @@ func restoreMappedModelName(info *relaycommon.RelayInfo, body []byte) []byte {
 // name. Used for constructed (non-passthrough) OpenAI-compat responses so they
 // don't leak the mapped upstream alias.
 func callerModelName(info *relaycommon.RelayInfo) string {
-	if info != nil && info.IsModelMapped && info.OriginModelName != "" {
+	if info == nil {
+		return ""
+	}
+	if info.ChannelMeta != nil && info.IsModelMapped && info.OriginModelName != "" {
 		return info.OriginModelName
 	}
-	if info != nil {
+	if info.ChannelMeta != nil {
 		return info.UpstreamModelName
 	}
-	return ""
+	// No channel bound yet: fall back to the requested name rather than "".
+	return info.OriginModelName
 }
 
 func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
