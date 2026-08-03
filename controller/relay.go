@@ -332,6 +332,12 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if openaiErr == nil {
 		return false
 	}
+	// Force retry for upstream stale-state errors (e.g. nested newapi's
+	// affinity cache pointing at a disabled channel) — bypass the local
+	// SkipRetryOnFailure guard so we can fall through to a sibling channel.
+	if service.IsUpstreamForcedRetryError(openaiErr) {
+		return retryTimes > 0
+	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
