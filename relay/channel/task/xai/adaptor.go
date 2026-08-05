@@ -154,6 +154,22 @@ func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, taskResult *rela
 	if len(task.Data) == 0 || common.Unmarshal(task.Data, &poll) != nil {
 		return 0
 	}
+
+	groupRatio := bc.GroupRatio
+	if groupRatio <= 0 {
+		groupRatio = 1
+	}
+
+	// Preferred: xAI reports its own charge for the request. That is
+	// authoritative — it already accounts for actual duration, resolution and
+	// input media, and stays correct if xAI changes its rate card.
+	if poll.Usage != nil {
+		if cost := UpstreamCostUSD(poll.Usage.CostInUsdTicks); cost > 0 {
+			return int(cost * common.QuotaPerUnit * groupRatio)
+		}
+	}
+
+	// Fallback: re-price locally from the delivered duration.
 	if poll.Video == nil {
 		return 0
 	}
@@ -167,10 +183,6 @@ func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, taskResult *rela
 		return 0 // nothing to settle
 	}
 
-	groupRatio := bc.GroupRatio
-	if groupRatio <= 0 {
-		groupRatio = 1
-	}
 	resRatio := bc.OtherRatios["resolution"]
 	if resRatio <= 0 {
 		resRatio = 1

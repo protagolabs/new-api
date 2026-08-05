@@ -2,6 +2,7 @@ package xai
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -109,6 +110,50 @@ func TestAdjustBillingOnCompleteSettlesActualDuration(t *testing.T) {
 	want = int(0.18 * common.QuotaPerUnit)
 	if got != want {
 		t.Errorf("input-media case: got %d, want %d", got, want)
+	}
+}
+
+// xAI reports its own charge via usage.cost_in_usd_ticks. That is authoritative
+// and must win over the local duration-based recompute. Shape and scale
+// verified against a live 480p/1s generation: 500000000 ticks == $0.05.
+func TestAdjustBillingOnCompletePrefersUpstreamCost(t *testing.T) {
+	a := &TaskAdaptor{}
+	success := &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}
+
+	// Local math would say 15s * $0.05 * 1.4 = $1.05; upstream says $0.05.
+	task := buildTask(t, 0.05,
+		map[string]float64{"seconds": 15, "resolution": 1.4, "media": 1},
+		`{"status":"done","video":{"duration":1},"usage":{"cost_in_usd_ticks":500000000}}`)
+	got := a.AdjustBillingOnComplete(task, success)
+	want := int(0.05 * common.QuotaPerUnit)
+	if got != want {
+		t.Errorf("upstream cost should win: got %d, want %d", got, want)
+	}
+
+	// An absurd cost must be rejected rather than charged, falling back to the
+	// local recompute (5s estimated, 3s delivered => $0.15).
+	task = buildTask(t, 0.05,
+		map[string]float64{"seconds": 5, "resolution": 1, "media": 1},
+		`{"status":"done","video":{"duration":3},"usage":{"cost_in_usd_ticks":999999999999999}}`)
+	got = a.AdjustBillingOnComplete(task, success)
+	want = int(0.15 * common.QuotaPerUnit)
+	if got != want {
+		t.Errorf("implausible upstream cost should fall back: got %d, want %d", got, want)
+	}
+}
+
+func TestUpstreamCostConversion(t *testing.T) {
+	if got := UpstreamCostUSD(500000000); math.Abs(got-0.05) > 1e-9 {
+		t.Errorf("live-verified value: got %v, want 0.05", got)
+	}
+	if got := UpstreamCostUSD(0); got != 0 {
+		t.Errorf("absent cost: got %v, want 0", got)
+	}
+	if got := UpstreamCostUSD(-5); got != 0 {
+		t.Errorf("negative cost: got %v, want 0", got)
+	}
+	if got := UpstreamCostUSD(int64(MaxUpstreamCostUSD*CostTicksPerUSD) + 1); got != 0 {
+		t.Errorf("over cap should be rejected: got %v, want 0", got)
 	}
 }
 
