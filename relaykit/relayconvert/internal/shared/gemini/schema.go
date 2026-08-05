@@ -78,6 +78,7 @@ func cleanGeminiFunctionParametersWithDepth(params interface{}, depth int) inter
 				cleanedNested[i] = cleanGeminiFunctionParametersWithDepth(item, depth+1)
 			}
 			cleanedMap["anyOf"] = cleanedNested
+			collapseGeminiAnyOfNullable(cleanedMap)
 		}
 
 		return cleanedMap
@@ -110,6 +111,82 @@ func cleanGeminiFunctionParametersShallow(params interface{}) interface{} {
 		return []interface{}{}
 	default:
 		return params
+	}
+}
+
+// Fields a collapsed anyOf branch contributes to its parent. Descriptive keys
+// (description/default/title) are deliberately excluded: those belong to the
+// parent property and must not be overwritten by a branch.
+var geminiAnyOfMergeFields = []string{
+	"type", "format", "enum", "items", "properties", "required", "propertyOrdering",
+	"minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems",
+	"minProperties", "maxProperties", "pattern", "example",
+}
+
+// collapseGeminiAnyOfNullable folds `anyOf: [{type: X}, {type: null}]` — what
+// Optional[X] serializes to — into `type: X, nullable: true`.
+//
+// Google's functionDeclaration validator requires an explicit type on every schema
+// node and rejects the whole request otherwise ("... schema didn't specify the
+// schema type field"). normalizeGeminiSchemaTypeAndNullable already rewrote the
+// `{type: null}` branch into a bare `{nullable: true}` with no type at all, so
+// without this step the parent stays type-less AND carries a type-less branch,
+// failing validation twice over.
+//
+// Genuine multi-type unions (anyOf[string, number]) keep their anyOf — Google
+// accepts anyOf in place of type — but the type-less null branch is still dropped.
+func collapseGeminiAnyOfNullable(schema map[string]interface{}) {
+	branches, ok := schema["anyOf"].([]interface{})
+	if !ok || len(branches) == 0 {
+		return
+	}
+
+	nullable := false
+	kept := make([]interface{}, 0, len(branches))
+	for _, branch := range branches {
+		branchMap, ok := branch.(map[string]interface{})
+		if !ok {
+			kept = append(kept, branch)
+			continue
+		}
+		// A branch reduced to nothing but nullable is the former {type: null}.
+		if _, hasType := branchMap["type"]; !hasType {
+			if isNullable, _ := branchMap["nullable"].(bool); isNullable && len(branchMap) == 1 {
+				nullable = true
+				continue
+			}
+		}
+		kept = append(kept, branch)
+	}
+
+	if nullable {
+		schema["nullable"] = true
+	}
+
+	switch len(kept) {
+	case 0:
+		delete(schema, "anyOf")
+	case 1:
+		// Single real branch: hoist it so the parent gets an explicit type.
+		delete(schema, "anyOf")
+		only, ok := kept[0].(map[string]interface{})
+		if !ok {
+			return
+		}
+		for _, field := range geminiAnyOfMergeFields {
+			value, present := only[field]
+			if !present {
+				continue
+			}
+			if _, taken := schema[field]; !taken {
+				schema[field] = value
+			}
+		}
+		if isNullable, _ := only["nullable"].(bool); isNullable {
+			schema["nullable"] = true
+		}
+	default:
+		schema["anyOf"] = kept
 	}
 }
 
