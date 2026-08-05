@@ -218,6 +218,29 @@ func BillingRatios(modelName string, modelPrice float64, seconds int, resolution
 	}
 }
 
+// CostTicksPerUSD converts xAI's `usage.cost_in_usd_ticks` to dollars.
+// Verified against a live 480p/1s generation: 500000000 ticks == $0.05.
+const CostTicksPerUSD = 10_000_000_000.0
+
+// MaxUpstreamCostUSD bounds a cost echoed back by the upstream before it is
+// used to charge a user. xAI's own ceiling is a 15s 1080p clip at $0.25/s
+// ($3.75) plus input media; this leaves generous headroom while still refusing
+// an absurd value from a malformed or hostile response.
+const MaxUpstreamCostUSD = 50.0
+
+// UpstreamCostUSD converts reported ticks to dollars, returning 0 when absent
+// or outside the plausible range (callers then fall back to local pricing).
+func UpstreamCostUSD(ticks int64) float64 {
+	if ticks <= 0 {
+		return 0
+	}
+	usd := float64(ticks) / CostTicksPerUSD
+	if usd > MaxUpstreamCostUSD {
+		return 0
+	}
+	return usd
+}
+
 // CapDuration clamps a duration coming back from the upstream. Shared with the
 // completion-time settlement path, which must never trust a remote value as an
 // unbounded billing multiplier.

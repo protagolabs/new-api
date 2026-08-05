@@ -34,10 +34,17 @@ type videoResult struct {
 	Duration int `json:"duration"`
 }
 
+// usageInfo carries xAI's own authoritative charge for the request.
+// CostInUsdTicks is USD scaled by CostTicksPerUSD.
+type usageInfo struct {
+	CostInUsdTicks int64 `json:"cost_in_usd_ticks"`
+}
+
 type pollResponse struct {
 	Status string       `json:"status"`
 	Model  string       `json:"model"`
 	Video  *videoResult `json:"video,omitempty"`
+	Usage  *usageInfo   `json:"usage,omitempty"`
 	Error  *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
