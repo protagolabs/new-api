@@ -635,14 +635,28 @@ func truncateBase64(s string) string {
 	return s[:maxKeep] + "..."
 }
 
+// PerCallSettlementAdaptor 由按次计费、但仍需按上游实际交付量结算的适配器实现。
+// 默认（未实现该接口）保持"按次计费跳过差额结算"的原有语义。
+type PerCallSettlementAdaptor interface {
+	SettlesPerCallOnComplete() bool
+}
+
+func adaptorSettlesPerCall(adaptor TaskPollingAdaptor) bool {
+	s, ok := adaptor.(PerCallSettlementAdaptor)
+	return ok && s.SettlesPerCallOnComplete()
+}
+
 // settleTaskBillingOnComplete 任务完成时的统一计费调整。
 // 优先级：1. adaptor.AdjustBillingOnComplete 返回正数 → 使用 adaptor 计算的额度
 //
 //  2. taskResult.TotalTokens > 0 → 按 token 重算
 //  3. 都不满足 → 保持预扣额度不变
 func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
-	// 0. 按次计费的任务不做差额结算
-	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
+	// 0. 按次计费的任务不做差额结算 —— 除非适配器显式声明要接管。
+	// 按次价通常意味着"一口价"，但个别上游按实际交付量计费（如 xAI 视频按实际
+	// 秒数出账），此时必须让适配器按实际结果重算。默认行为保持不变。
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling &&
+		!adaptorSettlesPerCall(adaptor) {
 		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 按次计费，跳过差额结算", task.TaskID))
 		return
 	}
