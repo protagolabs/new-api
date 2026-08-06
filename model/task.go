@@ -17,7 +17,12 @@ type TaskStatus string
 func (t TaskStatus) ToVideoStatus() string {
 	var status string
 	switch t {
-	case TaskStatusQueued, TaskStatusSubmitted:
+	case TaskStatusNotStart, TaskStatusQueued, TaskStatusSubmitted:
+		// NOT_START is the state between accepting a submission and the first
+		// poll. Reporting it as "unknown" is not just imprecise: a downstream
+		// new-api polling us cannot map that value back to a task status, treats
+		// the result as unparseable and fails the task outright -- even though
+		// the upstream goes on to complete and bill it.
 		status = dto.VideoStatusQueued
 	case TaskStatusInProgress:
 		status = dto.VideoStatusInProgress
