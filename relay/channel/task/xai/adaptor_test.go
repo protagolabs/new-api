@@ -61,8 +61,16 @@ func TestParseTaskResultStatusMapping(t *testing.T) {
 			if ti.Status != tc.wantStatus {
 				t.Errorf("status: got %v, want %v", ti.Status, tc.wantStatus)
 			}
-			if tc.wantURL != "" && ti.RemoteUrl != tc.wantURL {
-				t.Errorf("url: got %q, want %q", ti.RemoteUrl, tc.wantURL)
+			// Url drives the generic polling loop's result-URL choice; RemoteUrl
+			// is only read by the Gemini proxy. Both must be set, otherwise the
+			// caller gets a locally built proxy URL instead of the real video.
+			if tc.wantURL != "" {
+				if ti.Url != tc.wantURL {
+					t.Errorf("Url: got %q, want %q", ti.Url, tc.wantURL)
+				}
+				if ti.RemoteUrl != tc.wantURL {
+					t.Errorf("RemoteUrl: got %q, want %q", ti.RemoteUrl, tc.wantURL)
+				}
 			}
 			if tc.wantReason != "" && ti.Reason != tc.wantReason {
 				t.Errorf("reason: got %q, want %q", ti.Reason, tc.wantReason)

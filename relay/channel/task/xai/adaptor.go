@@ -283,6 +283,11 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		ti.Status = model.TaskStatusSuccess
 		ti.Progress = "100%"
 		if poll.Video != nil && poll.Video.URL != "" {
+			// Url is what the generic polling loop reads to decide the result
+			// URL; leaving it empty makes it fall back to a locally built proxy
+			// URL. RemoteUrl is only consumed by the Gemini video proxy, so
+			// setting that alone (as the Veo adaptor does) is not enough here.
+			ti.Url = poll.Video.URL
 			ti.RemoteUrl = poll.Video.URL
 		}
 	case "failed", "expired", "cancelled", "canceled":
