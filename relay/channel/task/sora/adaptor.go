@@ -55,6 +55,23 @@ type responseTask struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
 	} `json:"error,omitempty"`
+	// Metadata is absent from OpenAI's own Sora responses. It is populated when
+	// the upstream is another new-api instance, whose ConvertToOpenAIVideo puts
+	// the vendor's direct result URL there.
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// directResultURL returns the upstream's own result URL when it exposes one.
+// OpenAI's Sora does not — its videos are only retrievable via
+// GET /v1/videos/{id}/content — so this is empty there and the caller falls
+// back to building a local proxy URL, unchanged. A nested new-api upstream does
+// expose one, and passing it through avoids proxying the bytes through us.
+func (t responseTask) directResultURL() string {
+	raw, _ := t.Metadata["url"].(string)
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	return ""
 }
 
 // ============================
@@ -304,7 +321,13 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 		taskResult.Status = model.TaskStatusInProgress
 	case "completed":
 		taskResult.Status = model.TaskStatusSuccess
-		// Url intentionally left empty — the caller constructs the proxy URL using the public task ID
+		// Url is normally left empty — the caller then constructs the proxy URL
+		// from the public task ID, which is the only way to retrieve an OpenAI
+		// Sora video. A nested new-api upstream reports a direct vendor URL
+		// instead; pass it through so the bytes are not proxied through us.
+		if url := resTask.directResultURL(); url != "" {
+			taskResult.Url = url
+		}
 	case "failed", "cancelled":
 		taskResult.Status = model.TaskStatusFailure
 		if resTask.Error != nil {
