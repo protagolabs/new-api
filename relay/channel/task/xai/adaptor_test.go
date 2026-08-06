@@ -214,3 +214,81 @@ func TestAdjustBillingOnCompleteClampsUpstreamDuration(t *testing.T) {
 }
 
 func relaycommonMaxDuration() int { return relaycommon.MaxTaskDurationSeconds }
+
+// GET /v1/videos/{id} (the OpenAI-shaped fetch route) is served via a runtime
+// type assertion to channel.OpenAIVideoConverter; without this method it
+// answers "not_implemented:48" with HTTP 501 while the generic
+// GET /v1/video/generations/{id} route keeps working — so the gap only bites
+// clients using the OpenAI video shape.
+func TestConvertToOpenAIVideo(t *testing.T) {
+	a := &TaskAdaptor{}
+
+	task := &model.Task{
+		TaskID:     "task_abc",
+		Status:     model.TaskStatusSuccess,
+		Progress:   "100%",
+		CreatedAt:  1700000000,
+		FinishTime: 1700000060,
+		Properties: model.Properties{OriginModelName: "grok-imagine-video"},
+		Data:       json.RawMessage(`{"status":"done","video":{"url":"https://vidgen.x.ai/a.mp4","duration":3}}`),
+	}
+	out, err := a.ConvertToOpenAIVideo(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v["status"] != "completed" {
+		t.Errorf("status: got %v, want completed", v["status"])
+	}
+	if v["model"] != "grok-imagine-video" {
+		t.Errorf("model: got %v", v["model"])
+	}
+	if v["seconds"] != "3" {
+		t.Errorf("seconds: got %v, want \"3\"", v["seconds"])
+	}
+	md, _ := v["metadata"].(map[string]any)
+	if md == nil || md["url"] != "https://vidgen.x.ai/a.mp4" {
+		t.Errorf("metadata.url missing: %v", v["metadata"])
+	}
+
+	// Failure carries the upstream message through.
+	task = &model.Task{
+		TaskID: "task_bad", Status: model.TaskStatusFailure, Progress: "100%",
+		Data: json.RawMessage(`{"status":"failed","error":{"message":"moderation blocked","code":"blocked"}}`),
+	}
+	out, _ = a.ConvertToOpenAIVideo(task)
+	_ = json.Unmarshal(out, &v)
+	if v["status"] != "failed" {
+		t.Errorf("status: got %v, want failed", v["status"])
+	}
+	if e, _ := v["error"].(map[string]any); e == nil || e["message"] != "moderation blocked" {
+		t.Errorf("error not propagated: %v", v["error"])
+	}
+
+	// A task with no poll data yet (still queued) must render, not error.
+	task = &model.Task{TaskID: "task_q", Status: model.TaskStatusQueued, Progress: "0%"}
+	out, err = a.ConvertToOpenAIVideo(task)
+	if err != nil {
+		t.Fatalf("queued task must render: %v", err)
+	}
+	_ = json.Unmarshal(out, &v)
+	if v["status"] != "queued" {
+		t.Errorf("status: got %v, want queued", v["status"])
+	}
+
+	// Failure with no upstream error object falls back to the recorded reason.
+	task = &model.Task{TaskID: "task_e", Status: model.TaskStatusFailure,
+		FailReason: "task expired", Data: json.RawMessage(`{"status":"expired"}`)}
+	out, _ = a.ConvertToOpenAIVideo(task)
+	_ = json.Unmarshal(out, &v)
+	if e, _ := v["error"].(map[string]any); e == nil || e["message"] != "task expired" {
+		t.Errorf("fail reason fallback missing: %v", v["error"])
+	}
+
+	if _, err := a.ConvertToOpenAIVideo(nil); err == nil {
+		t.Error("nil task should error")
+	}
+}
