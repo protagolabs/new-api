@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,15 @@ import (
 )
 
 const defaultBaseURL = "https://api.x.ai"
+
+// Compile-time checks. OpenAIVideoConverter in particular is discovered by a
+// runtime type assertion in videoFetchByIDRespBodyBuilder, so dropping the
+// method would silently turn GET /v1/videos/{id} into a 501 instead of failing
+// the build.
+var (
+	_ channel.TaskAdaptor          = (*TaskAdaptor)(nil)
+	_ channel.OpenAIVideoConverter = (*TaskAdaptor)(nil)
+)
 
 type TaskAdaptor struct {
 	taskcommon.BaseBilling
@@ -305,6 +315,53 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 	}
 
 	return ti, nil
+}
+
+// ConvertToOpenAIVideo renders the task for GET /v1/videos/{id}, the
+// OpenAI-style fetch route. Without it that route answers
+// "not_implemented:48" (HTTP 501) — the generic
+// GET /v1/video/generations/{id} route is unaffected, so the gap only shows up
+// for clients using the OpenAI video shape. Implements
+// channel.OpenAIVideoConverter.
+func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error) {
+	if originTask == nil {
+		return nil, errors.New("nil task")
+	}
+
+	video := dto.NewOpenAIVideo()
+	video.ID = originTask.TaskID
+	video.TaskID = originTask.TaskID
+	video.Status = originTask.Status.ToVideoStatus()
+	video.SetProgressStr(originTask.Progress)
+	video.CreatedAt = originTask.CreatedAt
+	video.CompletedAt = originTask.FinishTime
+	video.Model = originTask.Properties.OriginModelName
+
+	// task.Data holds the last poll response. It can legitimately be empty (task
+	// still queued, or it failed before the first poll), so absence is not an
+	// error — the status fields above already describe the task.
+	var poll pollResponse
+	if len(originTask.Data) > 0 && common.Unmarshal(originTask.Data, &poll) == nil {
+		if poll.Video != nil {
+			if poll.Video.URL != "" {
+				video.SetMetadata("url", poll.Video.URL)
+			}
+			if poll.Video.Duration > 0 {
+				video.Seconds = strconv.Itoa(poll.Video.Duration)
+			}
+		}
+		if poll.Error != nil && poll.Error.Message != "" {
+			video.Error = &dto.OpenAIVideoError{Message: poll.Error.Message, Code: poll.Error.Code}
+		}
+	}
+
+	// Fall back to the reason the polling loop recorded when the upstream body
+	// carried no error object (e.g. an "expired" status).
+	if video.Error == nil && originTask.Status == model.TaskStatusFailure && originTask.FailReason != "" {
+		video.Error = &dto.OpenAIVideoError{Message: originTask.FailReason}
+	}
+
+	return common.Marshal(video)
 }
 
 func (a *TaskAdaptor) GetModelList() []string {
