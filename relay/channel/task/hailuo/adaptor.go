@@ -29,6 +29,18 @@ type TaskAdaptor struct {
 	ChannelType int
 	apiKey      string
 	baseURL     string
+
+	// v2 (H3) only. ParseTaskResult's signature carries no task id, but the v2
+	// query endpoint answers with a list of recent tasks, so the id has to be
+	// carried over from the FetchTask call that produced the body. Safe because
+	// the polling loop calls FetchTask and ParseTaskResult back to back on the
+	// same instance for one task at a time (service/task_polling.go).
+	pollTaskID string
+	// pollIsV2 records which protocol the in-flight poll used.
+	pollIsV2 bool
+	// submitIsV2 is set during request building so DoResponse can parse the
+	// matching submit response shape.
+	submitIsV2 bool
 }
 
 func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
@@ -42,6 +54,9 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
+	if IsV2Model(info.UpstreamModelName) {
+		return fmt.Sprintf("%s%s", a.baseURL, v2SubmitEndpoint), nil
+	}
 	return fmt.Sprintf("%s%s", a.baseURL, TextToVideoEndpoint), nil
 }
 
@@ -62,7 +77,14 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, fmt.Errorf("invalid request type in context")
 	}
 
-	body, err := a.convertToRequestPayload(&req, info)
+	var err error
+	var body any
+	if IsV2Model(info.UpstreamModelName) {
+		a.submitIsV2 = true
+		body, err = buildV2Request(&req, info.UpstreamModelName)
+	} else {
+		body, err = a.convertToRequestPayload(&req, info)
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "convert request payload failed")
 	}
@@ -86,6 +108,10 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return
 	}
 	_ = resp.Body.Close()
+
+	if a.submitIsV2 {
+		return a.doV2Response(c, responseBody, info)
+	}
 
 	var hResp VideoResponse
 	if err := common.Unmarshal(responseBody, &hResp); err != nil {
@@ -118,7 +144,17 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 		return nil, fmt.Errorf("invalid task_id")
 	}
 
-	uri := fmt.Sprintf("%s%s?task_id=%s", baseUrl, QueryTaskEndpoint, taskID)
+	// The polling loop passes the model so both API generations can share this
+	// adaptor; absent (older callers) it falls back to the v1 endpoint.
+	modelName, _ := body["model"].(string)
+	a.pollTaskID = taskID
+	a.pollIsV2 = IsV2Model(modelName)
+
+	endpoint := QueryTaskEndpoint
+	if a.pollIsV2 {
+		endpoint = v2QueryEndpoint
+	}
+	uri := fmt.Sprintf("%s%s?task_id=%s", baseUrl, endpoint, taskID)
 
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
@@ -183,6 +219,13 @@ func (a *TaskAdaptor) parseResolutionFromSize(size string, modelConfig ModelConf
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {
+	// Detect by payload shape as well as by the flag FetchTask set: the v2
+	// response is a list wrapper, which the v1 struct would silently parse into
+	// an empty task rather than fail on.
+	if a.pollIsV2 || bytes.Contains(respBody, []byte(`"items"`)) {
+		return parseV2Result(respBody, a.pollTaskID)
+	}
+
 	resTask := QueryTaskResponse{}
 	if err := common.Unmarshal(respBody, &resTask); err != nil {
 		return nil, errors.Wrap(err, "unmarshal task result failed")
@@ -225,6 +268,12 @@ func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, e
 }
 
 func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error) {
+	if IsV2Model(originTask.Properties.OriginModelName) ||
+		IsV2Model(originTask.Properties.UpstreamModelName) ||
+		bytes.Contains(originTask.Data, []byte(`"items"`)) {
+		return convertV2ToOpenAIVideo(originTask)
+	}
+
 	var hailuoResp QueryTaskResponse
 	if err := common.Unmarshal(originTask.Data, &hailuoResp); err != nil {
 		return nil, errors.Wrap(err, "unmarshal hailuo task data failed")
