@@ -200,6 +200,18 @@ func sizeToResolution(size string) (string, error) {
 }
 
 func ProcessAliOtherRatios(aliReq *AliVideoRequest) (map[string]float64, error) {
+	// HappyHorse is priced per second by resolution and is not in the Wan rate
+	// table; without this it would get no resolution multiplier at all and 1080P
+	// would be billed at the 720P rate.
+	if IsHappyHorse(aliReq.Model) {
+		res := aliReq.Parameters.Resolution
+		ratio, ok := happyHorseResolutionRatios[NormalizeHappyHorseResolution(res)]
+		if !ok {
+			ratio = happyHorseResolutionRatios[happyHorseDefaultResolution]
+		}
+		return map[string]float64{"resolution": ratio}, nil
+	}
+
 	otherRatios := make(map[string]float64)
 	aliRatios := map[string]map[string]float64{
 		"wan2.6-i2v": {
@@ -368,7 +380,11 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 	// 处理分辨率映射
 	if req.Size != "" {
 		// text to video size must be contained *
-		if strings.Contains(req.Model, "t2v") && !strings.Contains(req.Size, "*") {
+		// HappyHorse takes parameters.resolution ("720P"/"1080P") and ignores
+		// size entirely, so the Wan-style WxH requirement would reject a
+		// perfectly valid request.
+		if strings.Contains(req.Model, "t2v") && !strings.Contains(req.Size, "*") &&
+			!IsHappyHorse(req.Model) {
 			return nil, fmt.Errorf("invalid size: %s, example: %s", req.Size, "1920*1080")
 		}
 		if strings.Contains(req.Size, "*") {
@@ -439,6 +455,12 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 
 	if err := normalizeWan27I2VInput(aliReq, req); err != nil {
 		return nil, err
+	}
+
+	// Applied last so it overrides the Wan-shaped resolution mapping above,
+	// including anything metadata set.
+	if IsHappyHorse(upstreamModel) {
+		applyHappyHorseParameters(aliReq, req.Size)
 	}
 
 	return aliReq, nil
