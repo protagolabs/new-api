@@ -56,6 +56,7 @@ type AliVideoInput struct {
 type AliVideoParameters struct {
 	Resolution   string `json:"resolution,omitempty"`    // 分辨率: 480P/720P/1080P（图生视频、首尾帧生视频）
 	Size         string `json:"size,omitempty"`          // 尺寸: 如 "832*480"（文生视频）
+	Ratio        string `json:"ratio,omitempty"`         // 画幅: 16:9 / 9:16 / 1:1（HappyHorse）
 	Duration     int    `json:"duration,omitempty"`      // 时长: 3-10秒
 	PromptExtend bool   `json:"prompt_extend,omitempty"` // 是否开启prompt智能改写
 	Watermark    bool   `json:"watermark,omitempty"`     // 是否添加水印
