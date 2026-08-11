@@ -40,10 +40,12 @@ func TestIsHappyHorse(t *testing.T) {
 
 func TestNormalizeHappyHorseResolution(t *testing.T) {
 	for in, want := range map[string]string{
+		"480P": HappyHorse480P, "480p": HappyHorse480P, "480": HappyHorse480P,
 		"720P": HappyHorse720P, "720p": HappyHorse720P, "720": HappyHorse720P,
 		"1080P": HappyHorse1080P, "1080": HappyHorse1080P,
 		// Callers still send Wan-style sizes; translate instead of rejecting.
 		"1280*720": HappyHorse720P, "1920*1080": HappyHorse1080P, "1080*1920": HappyHorse1080P,
+		"854*480": HappyHorse480P, "640*360": HappyHorse480P,
 		"": "", "garbage": "",
 	} {
 		if got := NormalizeHappyHorseResolution(in); got != want {
@@ -65,6 +67,11 @@ func TestApplyHappyHorseParameters(t *testing.T) {
 		{"wan-style size gets translated", &AliVideoParameters{Size: "1280*720"}, "", HappyHorse720P},
 		{"caller asked 1080P", &AliVideoParameters{}, "1080P", HappyHorse1080P},
 		{"caller asked 720P", &AliVideoParameters{}, "720P", HappyHorse720P},
+		// A 480P request used to fall through to the 1080P default: the caller
+		// got the most expensive tier and was billed for it. Live-confirmed the
+		// vendor does serve 480P (usage.SR=480) despite the docs omitting it.
+		{"caller asked 480P must not be upgraded", &AliVideoParameters{}, "480P", HappyHorse480P},
+		{"480P via parameters.resolution", &AliVideoParameters{Resolution: "480P"}, "", HappyHorse480P},
 		{"explicit resolution wins", &AliVideoParameters{Resolution: "720P", Size: "1920*1080"}, "", HappyHorse720P},
 		// Nothing specified must match what the vendor actually defaults to,
 		// or the pre-charge is wrong from the start.
@@ -79,6 +86,62 @@ func TestApplyHappyHorseParameters(t *testing.T) {
 			}
 			if req.Parameters.Size != "" {
 				t.Errorf("size must be cleared, got %q", req.Parameters.Size)
+			}
+		})
+	}
+}
+
+// ratio was entirely absent from AliVideoParameters, so 9:16 and 1:1 were
+// unreachable and every video came back 16:9.
+func TestHappyHorseRatio(t *testing.T) {
+	for in, want := range map[string]string{
+		"16:9": HappyHorseRatio16x9, "9:16": HappyHorseRatio9x16, "1:1": HappyHorseRatio1x1,
+		"16x9": HappyHorseRatio16x9, "9X16": HappyHorseRatio9x16,
+		// Unrecognised values must yield "" so the field is left unset and the
+		// vendor applies its own default, rather than being rejected outright.
+		"21:9": "", "adaptive": "", "": "",
+	} {
+		if got := NormalizeHappyHorseRatio(in); got != want {
+			t.Errorf("ratio %q: got %q, want %q", in, got, want)
+		}
+	}
+
+	// Callers commonly express orientation through size alone.
+	for in, want := range map[string]string{
+		"1920*1080": HappyHorseRatio16x9,
+		"1080*1920": HappyHorseRatio9x16,
+		"1024*1024": HappyHorseRatio1x1,
+		"1280*720":  HappyHorseRatio16x9,
+	} {
+		w, h, ok := parseWidthHeight(in)
+		if !ok {
+			t.Fatalf("parse %q failed", in)
+		}
+		if got := happyHorseRatioFromSize(w, h); got != want {
+			t.Errorf("size %q -> ratio: got %q, want %q", in, got, want)
+		}
+	}
+
+	// End to end through the rewrite: explicit ratio wins, size infers, and an
+	// undeterminable one stays empty.
+	cases := []struct {
+		name    string
+		params  *AliVideoParameters
+		reqSize string
+		want    string
+	}{
+		{"explicit 9:16", &AliVideoParameters{Ratio: "9:16"}, "", HappyHorseRatio9x16},
+		{"inferred from portrait size", &AliVideoParameters{}, "1080*1920", HappyHorseRatio9x16},
+		{"inferred from square size", &AliVideoParameters{}, "1024*1024", HappyHorseRatio1x1},
+		{"explicit beats size", &AliVideoParameters{Ratio: "1:1"}, "1920*1080", HappyHorseRatio1x1},
+		{"nothing to go on -> unset", &AliVideoParameters{}, "720P", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &AliVideoRequest{Model: "happyhorse-1.1-t2v", Parameters: tc.params}
+			applyHappyHorseParameters(req, tc.reqSize)
+			if req.Parameters.Ratio != tc.want {
+				t.Errorf("ratio: got %q, want %q", req.Parameters.Ratio, tc.want)
 			}
 		})
 	}
@@ -165,6 +228,14 @@ func TestHappyHorseSettleQuota(t *testing.T) {
 	got = a.AdjustBillingOnComplete(hhTask(t, "happyhorse-1.1-t2v", 0.125, body2), ok)
 	if want := int(0.125 * 5 * 2 * common.QuotaPerUnit); got != want {
 		t.Errorf("video_count=2: got %d, want %d", got, want)
+	}
+
+	// A 480P delivery must settle at the 480P tier, not be lumped into 720P
+	// or (worse) 1080P.
+	body480 := `{"output":{"task_status":"SUCCEEDED"},"usage":{"SR":480,"duration":5,"video_count":1}}`
+	got = a.AdjustBillingOnComplete(hhTask(t, "happyhorse-1.1-t2v", 0.125, body480), ok)
+	if want := int(0.125 * 5 * happyHorseResolutionRatios[HappyHorse480P] * common.QuotaPerUnit); got != want {
+		t.Errorf("480P delivery: got %d, want %d", got, want)
 	}
 
 	// Wan models must be left completely alone.
