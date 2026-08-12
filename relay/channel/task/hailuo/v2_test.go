@@ -292,3 +292,34 @@ func TestConvertV2ToOpenAIVideo(t *testing.T) {
 		t.Fatalf("unpolled task must render: %v", err)
 	}
 }
+
+// The vendor's field is "ratio", but "aspect_ratio" is the common spelling and
+// what the sibling video adaptors accept. Supporting both keeps a caller's
+// choice from being silently dropped -- which is exactly what happened while
+// documenting this model.
+func TestV2AspectRatioAlias(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]any
+		size string
+		want string
+	}{
+		{"ratio", map[string]any{"ratio": "9:16"}, "", "9:16"},
+		{"aspect_ratio alias", map[string]any{"aspect_ratio": "9:16"}, "", "9:16"},
+		{"ratio wins over alias", map[string]any{"ratio": "1:1", "aspect_ratio": "9:16"}, "", "1:1"},
+		{"neither -> inferred from size", nil, "1080*1920", "9:16"},
+		{"neither and no size -> default", nil, "", "16:9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := relaycommon.TaskSubmitReq{Prompt: "x", Duration: 5, Size: tc.size, Metadata: tc.meta}
+			got, err := buildV2Request(&req, "MiniMax-H3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Ratio != tc.want {
+				t.Errorf("ratio: got %q, want %q", got.Ratio, tc.want)
+			}
+		})
+	}
+}

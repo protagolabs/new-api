@@ -120,6 +120,11 @@ type v2QueryResponse struct {
 type v2Metadata struct {
 	Resolution string `json:"resolution"`
 	Ratio      string `json:"ratio"`
+	// AspectRatio is an alias for Ratio. The vendor calls the field "ratio",
+	// but "aspect_ratio" is the common spelling elsewhere (and what the other
+	// video adaptors here accept), so callers reach for it and would otherwise
+	// have their choice silently dropped.
+	AspectRatio string `json:"aspect_ratio"`
 	// InputVideoSeconds lets a caller declare the length of a reference video
 	// up front so the pre-charge covers it; the vendor bills input footage at
 	// the output tier rate. The completion settlement corrects any mismatch.
@@ -160,7 +165,9 @@ func buildV2Request(req *relaycommon.TaskSubmitReq, upstreamModel string) (*v2Su
 	// reference image the vendor derives it from the input, so sending one
 	// would only risk conflicting with the image.
 	if v2FirstImage(req) == "" {
-		out.Ratio = taskcommon.DefaultString(meta.Ratio, v2ResolveRatio(req.Size))
+		out.Ratio = taskcommon.DefaultString(
+			taskcommon.DefaultString(meta.Ratio, meta.AspectRatio),
+			v2ResolveRatio(req.Size))
 	}
 	return out, nil
 }
