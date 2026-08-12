@@ -22,10 +22,10 @@ import (
 //
 // Docs: https://help.aliyun.com/zh/model-studio/happyhorse-text-to-video-api-reference
 const (
-	// 480P is absent from the published docs, which list only 720P/1080P, but a
-	// live request with resolution=480P returns usage.SR=480 -- the vendor does
-	// serve it. Left in because a caller asking for the cheapest tier must not
-	// silently receive (and be billed for) the most expensive one.
+	// 480P is absent from the prose docs, which mention only 720P/1080P, but it
+	// is both live-confirmed (usage.SR=480) and present on the vendor's price
+	// list at $0.07/s. A caller asking for the cheapest tier must not silently
+	// receive -- and be billed for -- the most expensive one.
 	HappyHorse480P  = "480P"
 	HappyHorse720P  = "720P"
 	HappyHorse1080P = "1080P"
@@ -79,14 +79,17 @@ func happyHorseRatioFromSize(w, h int) string {
 }
 
 // happyHorseResolutionRatios multiply ModelPrice, which is configured as the
-// 720P per-second rate. 1080P is 1.2 CNY/s against 720P's 0.9.
+// 720P per-second rate. Figures are the vendor's own USD price list
+// ($0.07 / $0.14 / $0.18 per second), identical across t2v/i2v/r2v.
+//
+// Do NOT derive these from the CNY list by exchange rate: the vendor prices the
+// USD region independently (CNY 0.9/1.2 would imply $0.125/$0.167 at 7.2, but
+// the published USD rates are $0.14/$0.18). We bill against the international
+// endpoint, so the USD list is the authoritative one.
 var happyHorseResolutionRatios = map[string]float64{
-	// 480P has no published rate. Priced at the 720P rate as a deliberate
-	// upper bound: it cannot cost more than 720P, so this never under-charges.
-	// Revise once the real figure is confirmed from the billing console.
-	HappyHorse480P:  1.0,
+	HappyHorse480P:  0.07 / 0.14,
 	HappyHorse720P:  1.0,
-	HappyHorse1080P: 1.2 / 0.9,
+	HappyHorse1080P: 0.18 / 0.14,
 }
 
 // IsHappyHorse reports whether a model belongs to the HappyHorse family.
