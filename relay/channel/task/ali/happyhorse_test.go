@@ -147,15 +147,20 @@ func TestHappyHorseRatio(t *testing.T) {
 	}
 }
 
-// ModelPrice is the 720P per-second rate; 1080P is 1.2 CNY/s against 0.9.
+// ModelPrice is the 720P per-second rate ($0.14); 480P is $0.07 and 1080P $0.18.
 func TestHappyHorseRatios(t *testing.T) {
 	r := happyHorseRatios(5, HappyHorse720P)
 	if r["seconds"] != 5 || r["resolution"] != 1.0 {
 		t.Errorf("720P: %+v", r)
 	}
 	r = happyHorseRatios(10, HappyHorse1080P)
-	if math.Abs(r["resolution"]-1.2/0.9) > 1e-9 {
+	if math.Abs(r["resolution"]-0.18/0.14) > 1e-9 {
 		t.Errorf("1080P ratio: %+v", r)
+	}
+	// The cheapest tier must actually be cheaper, not merely not-more-expensive.
+	r = happyHorseRatios(5, HappyHorse480P)
+	if math.Abs(r["resolution"]-0.07/0.14) > 1e-9 {
+		t.Errorf("480P ratio: %+v", r)
 	}
 }
 
@@ -168,7 +173,7 @@ func TestProcessAliOtherRatiosHappyHorse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(got["resolution"]-1.2/0.9) > 1e-9 {
+	if math.Abs(got["resolution"]-0.18/0.14) > 1e-9 {
 		t.Errorf("1080P: %+v", got)
 	}
 
@@ -210,8 +215,8 @@ func TestHappyHorseSettleQuota(t *testing.T) {
 
 	// Charged at 720P (ratio 1), vendor delivered 1080P for 5s:
 	// 0.125 * 5 * (1.2/0.9) = $0.8333
-	got := a.AdjustBillingOnComplete(hhTask(t, "happyhorse-1.1-t2v", 0.125, realHappyHorseBody), ok)
-	want := int(0.125 * 5 * (1.2 / 0.9) * common.QuotaPerUnit)
+	got := a.AdjustBillingOnComplete(hhTask(t, "happyhorse-1.1-t2v", 0.14, realHappyHorseBody), ok)
+	want := int(0.14 * 5 * (0.18 / 0.14) * common.QuotaPerUnit)
 	if got != want {
 		t.Errorf("1080P delivery: got %d, want %d", got, want)
 	}
