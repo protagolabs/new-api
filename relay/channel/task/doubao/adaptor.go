@@ -136,10 +136,6 @@ func (a *TaskAdaptor) BuildRequestHeader(_ *gin.Context, req *http.Request, _ *r
 }
 
 // EstimateBilling 根据请求 metadata 中的输出分辨率与是否包含视频输入，返回相对基准价的计费 OtherRatio。
-//
-// 两个维度分开记录，因为结算时它们的权威来源不同：输入是否带视频是请求的事实，
-// 上游无法改写；而输出分辨率必须回读响应（见 SettleQuota）。两者相乘等于原先的
-// 单一 video_input 倍率，预扣金额不变。
 func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInfo) map[string]float64 {
 	req, err := relaycommon.GetTaskRequest(c)
 	if err != nil {
@@ -147,101 +143,11 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	}
 	hasVideo := hasVideoInMetadata(req.Metadata)
 	resolution, _ := req.Metadata["resolution"].(string)
-
-	ratios := make(map[string]float64, 2)
-	if r, ok := GetVideoInputOnlyRatio(info.OriginModelName, hasVideo); ok && r != 1.0 {
-		ratios[RatioKeyVideoInput] = r
-	}
-	if r, ok := GetResolutionRatio(info.OriginModelName, resolution, hasVideo); ok && r != 1.0 {
-		ratios[RatioKeyResolution] = r
-	}
-	if len(ratios) == 0 {
+	ratio, ok := GetVideoInputRatio(info.OriginModelName, resolution, hasVideo)
+	if !ok || ratio == 1.0 {
 		return nil
 	}
-	return ratios
-}
-
-// SettlesPerCallOnComplete opts into completion-time settlement so a stray
-// ModelPrice entry cannot silently revert this model to flat per-call pricing.
-// SettleQuota itself returns 0 unless the model is ratio-priced, so the
-// per-call path keeps its existing behaviour.
-func (a *TaskAdaptor) SettlesPerCallOnComplete() bool { return true }
-
-// AdjustBillingOnComplete settles a finished task against the tokens the vendor
-// actually billed. Returns 0 for per-call-priced models, which keeps the
-// pre-charge — the behaviour they have always had.
-func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int {
-	return SettleQuota(task, taskResult)
-}
-
-// SettleQuota re-prices a finished task against what the vendor actually
-// produced and billed: `usage.completion_tokens`, which is the vendor's own
-// billing unit (its price list is quoted per million tokens), scaled by the
-// resolution tier *reported in the response*.
-//
-// Reading the resolution back from the response is the point. Trusting the
-// requested value would be a money-losing bug: ask for 4k, have the vendor
-// render 720p, and the token count is 720p's while the tier multiplier is 4k's
-// — which is a discount against the base tier, undercharging by ~43%. The
-// input-media dimension is the opposite case and is taken from submit time,
-// since the vendor cannot retroactively change what we sent it.
-//
-// Returns 0 to leave the pre-charge untouched: that is what happens for
-// per-call-priced models (ModelPrice, so ModelRatio is zero) and when the
-// vendor reported no usage.
-func SettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int {
-	if task == nil || taskResult == nil || taskResult.Status != model.TaskStatusSuccess {
-		return 0
-	}
-	bc := task.PrivateData.BillingContext
-	// ModelRatio is only set when the model is billed per token; a per-call
-	// price leaves it at zero and there is nothing to settle against.
-	if bc == nil || bc.ModelRatio <= 0 {
-		return 0
-	}
-
-	var resp responseTask
-	if len(task.Data) == 0 || common.Unmarshal(task.Data, &resp) != nil {
-		return 0
-	}
-	tokens := resp.Usage.CompletionTokens
-	if tokens <= 0 {
-		tokens = resp.Usage.TotalTokens
-	}
-	if tokens <= 0 {
-		return 0
-	}
-
-	modelName := resp.Model
-	if modelName == "" {
-		modelName = task.Properties.OriginModelName
-	}
-
-	// hasVideo is recoverable from the submit-time ratio: it is only recorded
-	// when it moves the price off the no-video base.
-	hasVideo := bc.OtherRatios[RatioKeyVideoInput] != 0
-
-	// Re-derive the resolution tier from what was delivered; keep the
-	// input-media factor from submit time. A model with no price table leaves
-	// both at 1.0, so billing stays token-accurate either way.
-	tierRatio := 1.0
-	if r, ok := GetResolutionRatio(modelName, resp.Resolution, hasVideo); ok {
-		tierRatio = r
-	}
-	if r := bc.OtherRatios[RatioKeyVideoInput]; r > 0 {
-		tierRatio *= r
-	}
-
-	groupRatio := bc.GroupRatio
-	if groupRatio <= 0 {
-		groupRatio = 1
-	}
-
-	total := float64(tokens) * bc.ModelRatio * tierRatio * groupRatio
-	if total <= 0 {
-		return 0
-	}
-	return int(total)
+	return map[string]float64{"video_input": ratio}
 }
 
 // hasVideoInMetadata 直接检查 metadata 的 content 数组是否包含 video_url 条目，
