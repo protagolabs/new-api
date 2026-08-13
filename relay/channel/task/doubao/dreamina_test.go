@@ -74,8 +74,10 @@ func TestDreaminaLeavesPerSecondPricingAlone(t *testing.T) {
 	}
 }
 
-// Asking for 4K and receiving 720p must bill 720p. Trusting the request would
-// charge the 4k tier (3.89/0.76 = 5.1x) on a 720p token count.
+// Asking for 4K and receiving 720p must bill the 720p unit price. Trusting the
+// request would charge the 4k unit-price tier ($4.0/M vs $7.0/M) on a 720p
+// token count -- undercharging, since 4K's unit price is lower but its token
+// count higher.
 func TestDreaminaBillsDeliveredResolutionNotRequested(t *testing.T) {
 	// Submit-time ratio records the 4K request, but the response says 720p.
 	requested4K := &model.TaskBillingContext{
@@ -90,7 +92,9 @@ func TestDreaminaBillsDeliveredResolutionNotRequested(t *testing.T) {
 	}
 }
 
-// A genuine 4K delivery picks up the 4k tier: 3.89/0.76 = 5.118x the 720p base.
+// A genuine 4K delivery picks up the 4k unit-price tier: $4.0/M vs $7.0/M =
+// 0.571x. The unit price is lower but the token count far higher, so absolute
+// 4K pricing still exceeds 720p.
 func TestDreaminaHonoursDelivered4k(t *testing.T) {
 	bc := &model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 1}
 	task4k, res := dreaminaTask(t, Dreamina4K, 108900, bc)
@@ -203,6 +207,32 @@ func TestDreaminaSettleNoOpCases(t *testing.T) {
 	other.Properties.UpstreamModelName = "doubao-seedance-1-0-pro-250528"
 	if got := DreaminaSettleQuota(other, res2); got != 0 {
 		t.Errorf("non-dreamina model must not settle, got %d", got)
+	}
+}
+
+// The ratio tables must reproduce the vendor's published unit prices per token
+// exactly (USD/M tokens, from docs.byteplus.com). A drift here is a pricing
+// incident: get it wrong and 480p undercharges or 4K overcharges by multiples.
+func TestDreaminaRatioTableMatchesVendorUnitPrices(t *testing.T) {
+	cases := []struct {
+		res      string
+		hasVideo bool
+		want     float64
+	}{
+		{Dreamina480P, false, 7.0 / 7.0},
+		{Dreamina720P, false, 7.0 / 7.0},
+		{Dreamina1080P, false, 7.7 / 7.0},
+		{Dreamina4K, false, 4.0 / 7.0},
+		{Dreamina480P, true, 4.3 / 7.0},
+		{Dreamina720P, true, 4.3 / 7.0},
+		{Dreamina1080P, true, 4.7 / 7.0},
+		{Dreamina4K, true, 2.4 / 7.0},
+	}
+	for _, tc := range cases {
+		got := dreaminaTierRatio(tc.res, tc.hasVideo)
+		if got < tc.want-1e-9 || got > tc.want+1e-9 {
+			t.Errorf("res=%s hasVideo=%v: got ratio %v, want %v (vendor unit price)", tc.res, tc.hasVideo, got, tc.want)
+		}
 	}
 }
 
