@@ -142,12 +142,33 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		return nil
 	}
 	hasVideo := hasVideoInMetadata(req.Metadata)
-	resolution, _ := req.Metadata["resolution"].(string)
+	resolution := dreaminaRequestedResolution(&req)
+
+	// Dreamina Seedance 2.0 is priced per second of output, so its estimate has
+	// to carry the duration too. The doubao-* models keep their per-token
+	// pricing untouched.
+	if IsDreaminaSeedance2(info.OriginModelName) {
+		seconds, _ := strconv.Atoi(req.Seconds)
+		return dreaminaRatios(seconds, resolution, hasVideo)
+	}
+
 	ratio, ok := GetVideoInputRatio(info.OriginModelName, resolution, hasVideo)
 	if !ok || ratio == 1.0 {
 		return nil
 	}
 	return map[string]float64{"video_input": ratio}
+}
+
+// SettlesPerCallOnComplete opts into completion-time settlement. Dreamina's
+// ModelPrice is a per-second rate, not a flat per-call price, so the per-call
+// short-circuit would otherwise discard the duration entirely.
+func (a *TaskAdaptor) SettlesPerCallOnComplete() bool { return true }
+
+// AdjustBillingOnComplete settles a finished task against what the vendor
+// actually delivered. Non-Dreamina models return 0 and keep the pre-charge,
+// which is the behaviour they have always had.
+func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int {
+	return DreaminaSettleQuota(task, taskResult)
 }
 
 // hasVideoInMetadata 直接检查 metadata 的 content 数组是否包含 video_url 条目，
@@ -303,6 +324,12 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		Type: "text",
 		Text: req.Prompt,
 	})
+
+	// Dreamina bills per resolution tier, so the tier the caller asked for has
+	// to reach the vendor -- `size` alone was being dropped on the floor.
+	if IsDreaminaSeedance2(r.Model) {
+		applyDreaminaResolution(req, &r)
+	}
 
 	return &r, nil
 }
