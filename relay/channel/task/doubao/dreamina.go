@@ -31,36 +31,33 @@ const (
 )
 
 // dreaminaResolutionRatios multiply ModelRatio, which is configured as the 720p
-// per-token rate. Derived from the vendor's published USD list for a 5s video
-// -- $0.35 / $0.76 / $1.87 / $3.89 for 480p / 720p / 1080p / 4K. The per-video
-// figures are used rather than the per-second ones ($0.07 / $0.15 / $0.37 /
-// $0.78) because the latter are rounded to two decimals.
+// per-token rate. These are the vendor's *unit prices per token* by output
+// resolution, relative to the 480p/720p no-video rate of $7.0/M tokens:
+// $7.0 (480p/720p) / $7.7 (1080p) / $4.0 (4K).
 //
-// Do NOT derive these from the CNY list by exchange rate. The vendor prices the
-// USD region independently; the CNY list is quoted per million tokens with a
-// different shape entirely. We bill against the international endpoint, so the
-// USD list is the authoritative one.
+// They must NOT be the "5s per-video price ratio" ($0.35 / $0.76 / $1.87 /
+// $3.89): usage.completion_tokens already encodes resolution, duration and
+// frame rate, so the 5s ratio would double-count the resolution's effect on
+// token count -- undercharging 480p by ~54% and overcharging 4K by ~8x.
 var dreaminaResolutionRatios = map[string]float64{
-	Dreamina480P:  0.35 / 0.76,
-	Dreamina720P:  1.0,
-	Dreamina1080P: 1.87 / 0.76,
-	Dreamina4K:    3.89 / 0.76,
+	Dreamina480P:  7.0 / 7.0,
+	Dreamina720P:  7.0 / 7.0,
+	Dreamina1080P: 7.7 / 7.0,
+	Dreamina4K:    4.0 / 7.0,
 }
 
-// dreaminaVideoInputRatios apply when the request carries a video input, which
-// the vendor charges for on top of the output. Its price then depends on the
-// *input* video's duration (2-15s), which the response does not report -- so
-// these use the 15s upper bound of the published range ($0.86 / $1.86 / $4.57 /
-// $9.33 per video), relative to the same 720p no-video base.
+// dreaminaVideoInputRatios are the unit prices per token when the request
+// carries a video input, again relative to the 720p no-video base: $4.3
+// (480p/720p) / $4.7 (1080p) / $2.4 (4K).
 //
-// That deliberately overcharges short video inputs rather than undercharging
-// long ones. No production traffic uses video input yet; revisit with real
-// requests before promoting the feature.
+// The unit price is *lower* with a video input, but total cost is still higher
+// because the input video's duration adds to token consumption -- the token
+// count already captures that, so no separate input-duration factor is needed.
 var dreaminaVideoInputRatios = map[string]float64{
-	Dreamina480P:  0.86 / 0.76,
-	Dreamina720P:  1.86 / 0.76,
-	Dreamina1080P: 4.57 / 0.76,
-	Dreamina4K:    9.33 / 0.76,
+	Dreamina480P:  4.3 / 7.0,
+	Dreamina720P:  4.3 / 7.0,
+	Dreamina1080P: 4.7 / 7.0,
+	Dreamina4K:    2.4 / 7.0,
 }
 
 // IsDreaminaSeedance2 reports whether a model is priced by the Dreamina USD
