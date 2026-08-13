@@ -37,41 +37,80 @@ const (
 	dreaminaDefaultResolution = Dreamina720P
 )
 
-// dreaminaResolutionRatios multiply ModelRatio, which is configured as the 720p
-// per-token rate. These are the vendor's *unit prices per token* by output
-// resolution, relative to the 480p/720p no-video rate of $7.0/M tokens:
-// $7.0 (480p/720p) / $7.7 (1080p) / $4.0 (4K).
+// dreaminaPricing is one model family's per-token unit prices, expressed as
+// ratios against that family's own no-video base tier -- so ModelRatio is always
+// the family's base list rate and the tables only carry tier differences.
 //
-// They must NOT be the "5s per-video price ratio" ($0.35 / $0.76 / $1.87 /
-// $3.89): usage.completion_tokens already encodes resolution, duration and
-// frame rate, so the 5s ratio would double-count the resolution's effect on
-// token count -- undercharging 480p by ~54% and overcharging 4K by ~8x.
-var dreaminaResolutionRatios = map[string]float64{
-	Dreamina480P:  7.0 / 7.0,
-	Dreamina720P:  7.0 / 7.0,
-	Dreamina1080P: 7.7 / 7.0,
-	Dreamina4K:    4.0 / 7.0,
+// The ratios must NOT be built from the "per-video price" tables in the docs
+// ($0.35 / $0.76 / $1.87 / $3.89 for a 5s 2.0 video): usage.completion_tokens
+// already encodes resolution, duration and frame rate, so a per-video ratio
+// double-counts resolution's effect on the token count -- that mistake
+// undercharged 480p by ~54% and overcharged 4K by ~8x.
+type dreaminaPricing struct {
+	base       float64            // family's no-video base list rate, USD/M tokens
+	resolution map[string]float64 // no video input
+	videoInput map[string]float64 // with video input
 }
 
-// dreaminaVideoInputRatios are the unit prices per token when the request
-// carries a video input, again relative to the 720p no-video base: $4.3
-// (480p/720p) / $4.7 (1080p) / $2.4 (4K).
+// dreaminaPricingByFamily maps a model-name prefix to its published USD list
+// rates (docs.byteplus.com, per M tokens). Matched by longest prefix so a new
+// point release cannot silently inherit another family's rates.
 //
-// The unit price is *lower* with a video input, but total cost is still higher
-// because the input video's duration adds to token consumption -- the token
-// count already captures that, so no separate input-duration factor is needed.
-var dreaminaVideoInputRatios = map[string]float64{
-	Dreamina480P:  4.3 / 7.0,
-	Dreamina720P:  4.3 / 7.0,
-	Dreamina1080P: 4.7 / 7.0,
-	Dreamina4K:    2.4 / 7.0,
+// A family absent here is not treated as Dreamina at all: it falls through to
+// the generic per-token path, which bills tokens x ModelRatio with no tier
+// adjustment. Correct for a base-tier request, and it overcharges rather than
+// undercharges otherwise.
+var dreaminaPricingByFamily = map[string]dreaminaPricing{
+	// Seedance 2.0: rate varies by output resolution AND video input.
+	// no video: $7.0 (480p/720p) / $7.7 (1080p) / $4.0 (4K)
+	// video in: $4.3 (480p/720p) / $4.7 (1080p) / $2.4 (4K)
+	"dreamina-seedance-2-0": {
+		base: 7.0,
+		resolution: map[string]float64{
+			Dreamina480P: 7.0 / 7.0, Dreamina720P: 7.0 / 7.0,
+			Dreamina1080P: 7.7 / 7.0, Dreamina4K: 4.0 / 7.0,
+		},
+		videoInput: map[string]float64{
+			Dreamina480P: 4.3 / 7.0, Dreamina720P: 4.3 / 7.0,
+			Dreamina1080P: 4.7 / 7.0, Dreamina4K: 2.4 / 7.0,
+		},
+	},
+	// Seedance 2.5: only 480p/720p exist, and both bill at the same rate, so the
+	// only tier axis is video input. no video $10.70 / video in $6.40.
+	// Input video may run to 30s here (2.0 caps at 15s), and a minimum token
+	// charge applies with video input -- both already reflected in the vendor's
+	// completion_tokens, so neither needs handling on our side.
+	"dreamina-seedance-2-5": {
+		base: 10.70,
+		resolution: map[string]float64{
+			Dreamina480P: 1.0, Dreamina720P: 1.0,
+		},
+		videoInput: map[string]float64{
+			Dreamina480P: 6.40 / 10.70, Dreamina720P: 6.40 / 10.70,
+		},
+	},
 }
 
-// IsDreaminaSeedance2 reports whether a model is priced by the Dreamina USD
-// list. Prefix-matched so point releases do not silently fall back to the
-// per-call pricing this replaces.
+// dreaminaFamilyFor returns the pricing for a model, matching the longest
+// configured prefix.
+func dreaminaFamilyFor(modelName string) (dreaminaPricing, bool) {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	best, bestLen, found := dreaminaPricing{}, -1, false
+	for prefix, pricing := range dreaminaPricingByFamily {
+		if strings.HasPrefix(name, prefix) && len(prefix) > bestLen {
+			best, bestLen, found = pricing, len(prefix), true
+		}
+	}
+	return best, found
+}
+
+// IsDreaminaSeedance2 reports whether a model is priced by a known Dreamina USD
+// list. An unrecognised dreamina release returns false on purpose: inheriting
+// another family's rates would be a silent mispricing, while falling through to
+// the generic per-token path is visible and errs toward overcharging.
 func IsDreaminaSeedance2(modelName string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "dreamina-seedance-2")
+	_, ok := dreaminaFamilyFor(modelName)
+	return ok
 }
 
 // NormalizeDreaminaResolution maps the ways a caller can spell a tier onto the
@@ -91,16 +130,21 @@ func NormalizeDreaminaResolution(v string) string {
 	return ""
 }
 
-// dreaminaTierRatio picks the per-token multiplier for a resolution tier,
-// falling back to the vendor's default tier when the caller gave nothing usable.
-func dreaminaTierRatio(resolution string, hasVideo bool) float64 {
+// dreaminaTierRatio picks the per-token multiplier for a model's resolution
+// tier, falling back to the vendor's default tier when the caller gave nothing
+// usable, and to the family's base rate for a tier the family does not list.
+func dreaminaTierRatio(modelName, resolution string, hasVideo bool) float64 {
+	pricing, ok := dreaminaFamilyFor(modelName)
+	if !ok {
+		return 1.0
+	}
 	res := NormalizeDreaminaResolution(resolution)
 	if res == "" {
 		res = dreaminaDefaultResolution
 	}
-	table := dreaminaResolutionRatios
+	table := pricing.resolution
 	if hasVideo {
-		table = dreaminaVideoInputRatios
+		table = pricing.videoInput
 	}
 	if r, ok := table[res]; ok {
 		return r
@@ -143,8 +187,8 @@ func applyDreaminaResolution(req *relaycommon.TaskSubmitReq, out *requestPayload
 // deliberately does NOT appear here: the token pre-charge already assumes a fixed
 // token budget, and the completion-time settlement reconciles against the actual
 // completion_tokens, so baking seconds into the pre-charge would double-count it.
-func dreaminaRatios(resolution string, hasVideo bool) map[string]float64 {
-	if r := dreaminaTierRatio(resolution, hasVideo); r != 1.0 {
+func dreaminaRatios(modelName, resolution string, hasVideo bool) map[string]float64 {
+	if r := dreaminaTierRatio(modelName, resolution, hasVideo); r != 1.0 {
 		return map[string]float64{"resolution": r}
 	}
 	return nil
@@ -193,10 +237,20 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 		return 0
 	}
 
-	// hasVideo is recoverable from the submit-time ratio: the video-input table
-	// has no entry equal to the no-video one, so a resolution ratio that matches
-	// a video-input tier means the request carried a video.
-	hasVideo := dreaminaHadVideoInput(bc.OtherRatios["resolution"])
+	// Settle against the model the vendor reports, falling back to what we
+	// recorded -- the tier tables are family-specific and must not be crossed.
+	modelName := resp.Model
+	if !IsDreaminaSeedance2(modelName) {
+		modelName = task.Properties.OriginModelName
+		if !IsDreaminaSeedance2(modelName) {
+			modelName = task.Properties.UpstreamModelName
+		}
+	}
+
+	// hasVideo is recoverable from the submit-time ratio: within a family the
+	// video-input table shares no value with the no-video one, so a resolution
+	// ratio matching a video-input tier means the request carried a video.
+	hasVideo := dreaminaHadVideoInput(modelName, bc.OtherRatios["resolution"])
 
 	groupRatio := bc.GroupRatio
 	if groupRatio <= 0 {
@@ -205,7 +259,7 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 
 	// ModelRatio is quota per token, so the result is already in quota -- no
 	// QuotaPerUnit scaling, unlike the per-second path it replaces.
-	total := float64(tokens) * bc.ModelRatio * dreaminaTierRatio(resp.Resolution, hasVideo) * groupRatio
+	total := float64(tokens) * bc.ModelRatio * dreaminaTierRatio(modelName, resp.Resolution, hasVideo) * groupRatio
 	if total <= 0 {
 		return 0
 	}
@@ -213,14 +267,19 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 }
 
 // dreaminaHadVideoInput recognises a submit-time resolution ratio as belonging
-// to the video-input table. The two tables share no values, so the match is
-// unambiguous.
-func dreaminaHadVideoInput(submitRatio float64) bool {
+// to this family's video-input table. Scoped to the family because a ratio that
+// means "video input" for one release can be a plain resolution tier in another;
+// within a family the two tables share no values, which a test asserts.
+func dreaminaHadVideoInput(modelName string, submitRatio float64) bool {
 	if submitRatio <= 0 {
 		return false
 	}
+	pricing, ok := dreaminaFamilyFor(modelName)
+	if !ok {
+		return false
+	}
 	const epsilon = 1e-9
-	for _, r := range dreaminaVideoInputRatios {
+	for _, r := range pricing.videoInput {
 		if submitRatio > r-epsilon && submitRatio < r+epsilon {
 			return true
 		}

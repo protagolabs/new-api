@@ -9,6 +9,8 @@ var ModelList = []string{
 	"doubao-seedance-1-5-pro-251215",
 	"doubao-seedance-2-0-260128",
 	"doubao-seedance-2-0-fast-260128",
+	"dreamina-seedance-2-0-260128",
+	"dreamina-seedance-2-5-260628",
 }
 
 var ChannelName = "doubao-video"

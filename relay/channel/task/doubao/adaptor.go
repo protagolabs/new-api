@@ -148,7 +148,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	// to carry the duration too. The doubao-* models keep their per-token
 	// pricing untouched.
 	if IsDreaminaSeedance2(info.OriginModelName) {
-		return dreaminaRatios(resolution, hasVideo)
+		return dreaminaRatios(info.OriginModelName, resolution, hasVideo)
 	}
 
 	ratio, ok := GetVideoInputRatio(info.OriginModelName, resolution, hasVideo)
