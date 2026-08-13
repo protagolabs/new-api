@@ -8,12 +8,16 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 )
 
-// Dreamina Seedance 2.0 is priced per second of output, per resolution tier --
-// not per call, which is how it was originally configured here. A flat
-// ModelPrice sets PerCallBilling, which short-circuits
-// settleTaskBillingOnComplete before any duration or resolution is considered,
-// so a 10s video cost us twice a 5s one and sold for the same price (measured in
-// production 2026-08-13: 5s/720p and 10s/720p both charged $2.10).
+// Dreamina Seedance 2.0 is priced per output token, per resolution tier -- the
+// vendor's billing unit is `usage.completion_tokens` at a flat $/token rate, not
+// per call and not per second. A flat ModelPrice set PerCallBilling, which
+// short-circuits settleTaskBillingOnComplete before duration or resolution are
+// considered, so a 10s video cost us twice a 5s one and sold for the same price
+// (measured in production 2026-08-13: 5s/720p and 10s/720p both charged $2.10).
+//
+// Billing by token (ModelRatio) rather than by second keeps our cost aligned
+// with the vendor's invoice exactly: 10s/720p is 216.9K tokens, not 2x the 5s
+// 108.9K, and only token billing reproduces that without a drifting margin.
 
 const (
 	Dreamina480P  = "480p"
@@ -26,8 +30,8 @@ const (
 	dreaminaDefaultResolution = Dreamina720P
 )
 
-// dreaminaResolutionRatios multiply ModelPrice, which is configured as the 720p
-// per-second rate. Derived from the vendor's published USD list for a 5s video
+// dreaminaResolutionRatios multiply ModelRatio, which is configured as the 720p
+// per-token rate. Derived from the vendor's published USD list for a 5s video
 // -- $0.35 / $0.76 / $1.87 / $3.89 for 480p / 720p / 1080p / 4K. The per-video
 // figures are used rather than the per-second ones ($0.07 / $0.15 / $0.37 /
 // $0.78) because the latter are rounded to two decimals.
@@ -83,7 +87,7 @@ func NormalizeDreaminaResolution(v string) string {
 	return ""
 }
 
-// dreaminaTierRatio picks the per-second multiplier for a resolution tier,
+// dreaminaTierRatio picks the per-token multiplier for a resolution tier,
 // falling back to the vendor's default tier when the caller gave nothing usable.
 func dreaminaTierRatio(resolution string, hasVideo bool) float64 {
 	res := NormalizeDreaminaResolution(resolution)
@@ -131,22 +135,19 @@ func applyDreaminaResolution(req *relaycommon.TaskSubmitReq, out *requestPayload
 	}
 }
 
-// dreaminaRatios prices a request as ModelPrice x seconds x resolution.
-func dreaminaRatios(seconds int, resolution string, hasVideo bool) map[string]float64 {
-	if seconds <= 0 {
-		seconds = 5 // the vendor's default output duration
+// dreaminaRatios prices a request as ModelRatio x resolution tier. The duration
+// deliberately does NOT appear here: the token pre-charge already assumes a fixed
+// token budget, and the completion-time settlement reconciles against the actual
+// completion_tokens, so baking seconds into the pre-charge would double-count it.
+func dreaminaRatios(resolution string, hasVideo bool) map[string]float64 {
+	if r := dreaminaTierRatio(resolution, hasVideo); r != 1.0 {
+		return map[string]float64{"resolution": r}
 	}
-	if seconds > relaycommon.MaxTaskDurationSeconds {
-		seconds = relaycommon.MaxTaskDurationSeconds
-	}
-	return map[string]float64{
-		"seconds":    float64(seconds),
-		"resolution": dreaminaTierRatio(resolution, hasVideo),
-	}
+	return nil
 }
 
-// DreaminaSettleQuota re-prices a finished task against what the vendor actually
-// delivered: the duration and resolution reported in the response.
+// DreaminaSettleQuota re-prices a finished task against the tokens the vendor
+// actually billed and the resolution tier it reported.
 //
 // Reading the resolution back is the point. Trusting the requested value would
 // be a money-losing bug in both directions -- and for this vendor the request is
@@ -159,7 +160,8 @@ func dreaminaRatios(seconds int, resolution string, hasVideo bool) map[string]fl
 // nothing about the input.
 //
 // Returns 0 to leave the pre-charge untouched -- for other models, for
-// unfinished or failed tasks, and whenever the response is unusable.
+// unfinished or failed tasks, for per-second-priced models (ModelRatio is zero),
+// and whenever the response is unusable.
 func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int {
 	if task == nil || taskResult == nil || taskResult.Status != model.TaskStatusSuccess {
 		return 0
@@ -169,7 +171,9 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 		return 0
 	}
 	bc := task.PrivateData.BillingContext
-	if bc == nil || bc.ModelPrice <= 0 {
+	// ModelRatio is only set when the model is billed per token; a per-second
+	// ModelPrice leaves it at zero and there is nothing to settle here.
+	if bc == nil || bc.ModelRatio <= 0 {
 		return 0
 	}
 
@@ -177,12 +181,12 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 	if len(task.Data) == 0 || common.Unmarshal(task.Data, &resp) != nil {
 		return 0
 	}
-	seconds := resp.Duration
-	if seconds <= 0 {
-		return 0
+	tokens := resp.Usage.CompletionTokens
+	if tokens <= 0 {
+		tokens = resp.Usage.TotalTokens
 	}
-	if seconds > relaycommon.MaxTaskDurationSeconds {
-		seconds = relaycommon.MaxTaskDurationSeconds
+	if tokens <= 0 {
+		return 0
 	}
 
 	// hasVideo is recoverable from the submit-time ratio: the video-input table
@@ -195,11 +199,13 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 		groupRatio = 1
 	}
 
-	total := bc.ModelPrice * float64(seconds) * dreaminaTierRatio(resp.Resolution, hasVideo) * groupRatio
+	// ModelRatio is quota per token, so the result is already in quota -- no
+	// QuotaPerUnit scaling, unlike the per-second path it replaces.
+	total := float64(tokens) * bc.ModelRatio * dreaminaTierRatio(resp.Resolution, hasVideo) * groupRatio
 	if total <= 0 {
 		return 0
 	}
-	return int(total * common.QuotaPerUnit)
+	return int(total)
 }
 
 // dreaminaHadVideoInput recognises a submit-time resolution ratio as belonging
