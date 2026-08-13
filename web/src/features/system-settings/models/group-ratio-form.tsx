@@ -73,6 +73,7 @@ type GroupFormValues = {
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
+  GroupModelRatio: string
 }
 
 type GroupRatioFormProps = {
@@ -337,6 +338,35 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     {`{ targetGroup: ratio }`}{' '}
                     {t(
                       'to override billing when a user in one group uses a token of another group.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='GroupModelRatio'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>
+                    {t('Per-user per-model discounts')}
+                  </FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('Nested JSON: user:<id> or group →')}{' '}
+                    {`{ model: ratio }`}{' '}
+                    {t(
+                      'to discount specific models for a user or group. A trailing * matches by model prefix.'
                     )}
                   </FormDescription>
                   <FormMessage />

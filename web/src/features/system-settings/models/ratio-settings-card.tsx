@@ -134,6 +134,7 @@ const createGroupSchema = (t: Translate) =>
     MaxTokenAutoGroups: positiveIntegerSchema(t('Enter a positive integer')),
     DefaultUseAutoGroup: z.boolean(),
     GroupSpecialUsableGroup: createJsonStringField(t),
+    GroupModelRatio: createJsonStringField(t),
   })
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
@@ -211,6 +212,7 @@ export function RatioSettingsCard({
     GroupSpecialUsableGroup: normalizeJsonString(
       groupDefaults.GroupSpecialUsableGroup
     ),
+    GroupModelRatio: normalizeJsonString(groupDefaults.GroupModelRatio),
   })
   const modelSchema = useMemo(() => createModelSchema(t), [t])
   const groupSchema = useMemo(() => createGroupSchema(t), [t])
@@ -248,6 +250,7 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: formatJsonForTextarea(
         groupDefaults.GroupSpecialUsableGroup
       ),
+      GroupModelRatio: formatJsonForTextarea(groupDefaults.GroupModelRatio),
     },
   })
 
@@ -298,6 +301,7 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: normalizeJsonString(
         groupDefaults.GroupSpecialUsableGroup
       ),
+      GroupModelRatio: normalizeJsonString(groupDefaults.GroupModelRatio),
     }
 
     groupForm.reset({
@@ -310,6 +314,7 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: formatJsonForTextarea(
         groupDefaults.GroupSpecialUsableGroup
       ),
+      GroupModelRatio: formatJsonForTextarea(groupDefaults.GroupModelRatio),
     })
   }, [groupDefaults, groupForm])
 
@@ -369,12 +374,15 @@ export function RatioSettingsCard({
         GroupSpecialUsableGroup: normalizeJsonString(
           values.GroupSpecialUsableGroup
         ),
+        GroupModelRatio: normalizeJsonString(values.GroupModelRatio),
       }
 
-      // Map form field names to API keys (most are 1:1, except GroupSpecialUsableGroup)
+      // Map form field names to API keys (most are 1:1, except the nested
+      // group_ratio_setting / group_model_ratio_setting options).
       const apiKeyMap: Record<string, string> = {
         GroupSpecialUsableGroup:
           'group_ratio_setting.group_special_usable_group',
+        GroupModelRatio: 'group_model_ratio_setting.group_model_ratio',
       }
 
       const updates = (
