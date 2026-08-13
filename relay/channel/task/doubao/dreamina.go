@@ -15,9 +15,16 @@ import (
 // considered, so a 10s video cost us twice a 5s one and sold for the same price
 // (measured in production 2026-08-13: 5s/720p and 10s/720p both charged $2.10).
 //
-// Billing by token (ModelRatio) rather than by second keeps our cost aligned
+// Billing by token (ModelRatio) rather than by second keeps our price aligned
 // with the vendor's invoice exactly: 10s/720p is 216.9K tokens, not 2x the 5s
-// 108.9K, and only token billing reproduces that without a drifting margin.
+// 108.9K, and only token billing reproduces that.
+//
+// PRICING PRINCIPLE: we resell at the vendor's *published list price*, not at a
+// markup. ModelRatio must equal the vendor's per-token list rate (1 ratio =
+// $2/M tokens, so the $7.0/M base tier means ModelRatio = 3.5). Our margin comes
+// from the discount the vendor gives us off list, which never appears in these
+// tables -- a customer who paid more here than going direct to the vendor would
+// have no reason to use us at all.
 
 const (
 	Dreamina480P  = "480p"
