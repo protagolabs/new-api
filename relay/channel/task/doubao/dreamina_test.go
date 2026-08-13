@@ -4,24 +4,24 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 )
 
 const dreaminaModel = "dreamina-seedance-2-0-260128"
 
-// ModelPrice is configured as the 720p per-second rate. $0.42 keeps a 5s/720p
-// video at the $2.10 it has always cost while letting everything else scale.
-const testModelPrice = 0.42
+// ModelRatio is quota per token, chosen so a 5s/720p video -- 108900 tokens,
+// the exact value captured from production on 2026-08-13 -- still costs $2.10.
+// 1050000 / 108900 = 9.641873...
+const testModelRatio = 9.6419
 
-func dreaminaTask(t *testing.T, resolution string, duration int, bc *model.TaskBillingContext) (*model.Task, *relaycommon.TaskInfo) {
+func dreaminaTask(t *testing.T, resolution string, tokens int, bc *model.TaskBillingContext) (*model.Task, *relaycommon.TaskInfo) {
 	t.Helper()
 	body, err := json.Marshal(map[string]any{
 		"model":      dreaminaModel,
 		"status":     "succeeded",
 		"resolution": resolution,
-		"duration":   duration,
+		"usage":      map[string]int{"completion_tokens": tokens, "total_tokens": tokens},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -32,70 +32,82 @@ func dreaminaTask(t *testing.T, resolution string, duration int, bc *model.TaskB
 	return task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}
 }
 
-func usd(quota int) float64 { return float64(quota) / common.QuotaPerUnit }
+func usd(quota int) float64 { return float64(quota) / 500000.0 }
 
-// The vendor's published USD list for a 5s video, reproduced end to end. These
-// are the numbers on the invoice we are marking up, so a drift here is a pricing
-// incident.
-func TestDreaminaSettlesAgainstPublishedList(t *testing.T) {
-	bc := &model.TaskBillingContext{ModelPrice: testModelPrice, GroupRatio: 1}
-	// Markup is uniform across tiers, so each tier lands at list x (2.10/0.76).
-	const markup = 2.10 / 0.76
-	for _, tc := range []struct {
-		res  string
-		list float64
-	}{
-		{Dreamina480P, 0.35},
-		{Dreamina720P, 0.76},
-		{Dreamina1080P, 1.87},
-		{Dreamina4K, 3.89},
-	} {
-		task, res := dreaminaTask(t, tc.res, 5, bc)
-		got := usd(DreaminaSettleQuota(task, res))
-		want := tc.list * markup
-		if got < want-0.005 || got > want+0.005 {
-			t.Errorf("%s 5s: got $%.4f, want $%.4f", tc.res, got, want)
-		}
+// The whole reason for the switch: billing has to track the vendor's tokens, not
+// a flat per-call price. A 5s/720p video is 108900 tokens and still lands at
+// $2.10 so existing customers are untouched.
+func TestDreaminaBillsByTokens(t *testing.T) {
+	bc := &model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 1}
+	task, res := dreaminaTask(t, Dreamina720P, 108900, bc)
+	got := usd(DreaminaSettleQuota(task, res))
+	if got < 2.095 || got > 2.105 {
+		t.Errorf("5s/720p (108900 tokens) should be $2.10, got $%.4f", got)
 	}
 }
 
-// The whole reason for the change: duration has to move the bill.
-func TestDreaminaScalesWithDuration(t *testing.T) {
-	bc := &model.TaskBillingContext{ModelPrice: testModelPrice, GroupRatio: 1}
+// 10s/720p is 216900 tokens -- NOT exactly 2x the 5s 108900 (it is 1.9917x).
+// Billing per second would charge exactly 2x; billing per token tracks the
+// vendor. This is the drift that made per-second pricing diverge from the
+// invoice.
+func TestDreaminaTracksVendorTokensNotSeconds(t *testing.T) {
+	bc := &model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 1}
+	task5, res5 := dreaminaTask(t, Dreamina720P, 108900, bc)
+	task10, res10 := dreaminaTask(t, Dreamina720P, 216900, bc)
+	got5, got10 := DreaminaSettleQuota(task5, res5), DreaminaSettleQuota(task10, res10)
 
-	task5s, res := dreaminaTask(t, Dreamina720P, 5, bc)
-	got5s := usd(DreaminaSettleQuota(task5s, res))
-	task10s, res := dreaminaTask(t, Dreamina720P, 10, bc)
-	got10s := usd(DreaminaSettleQuota(task10s, res))
-
-	if got5s < 2.095 || got5s > 2.105 {
-		t.Errorf("5s/720p should stay at $2.10, got $%.4f", got5s)
+	ratio := float64(got10) / float64(got5)
+	want := 216900.0 / 108900.0 // 1.9917
+	if ratio < want-0.001 || ratio > want+0.001 {
+		t.Errorf("10s/5s quota ratio should be %.4f (token ratio), got %.4f", want, ratio)
 	}
-	if got10s < 4.195 || got10s > 4.205 {
-		t.Errorf("10s/720p should be $4.20, got $%.4f", got10s)
+}
+
+// A per-second price (ModelPrice, so ModelRatio is zero) must leave the
+// pre-charge untouched -- this model was per-second before the switch, and other
+// doubao models still are.
+func TestDreaminaLeavesPerSecondPricingAlone(t *testing.T) {
+	bc := &model.TaskBillingContext{ModelPrice: 0.42, GroupRatio: 1}
+	task, res := dreaminaTask(t, Dreamina720P, 108900, bc)
+	if got := DreaminaSettleQuota(task, res); got != 0 {
+		t.Errorf("per-second pricing must not settle, got %d", got)
 	}
 }
 
 // Asking for 4K and receiving 720p must bill 720p. Trusting the request would
-// charge 5.1x -- and this vendor is especially untrustworthy here, having
-// ignored `size` outright before applyDreaminaResolution.
+// charge the 4k tier (3.89/0.76 = 5.1x) on a 720p token count.
 func TestDreaminaBillsDeliveredResolutionNotRequested(t *testing.T) {
+	// Submit-time ratio records the 4K request, but the response says 720p.
 	requested4K := &model.TaskBillingContext{
-		ModelPrice:  testModelPrice,
+		ModelRatio:  testModelRatio,
 		GroupRatio:  1,
-		OtherRatios: map[string]float64{"resolution": dreaminaResolutionRatios[Dreamina4K], "seconds": 5},
+		OtherRatios: map[string]float64{"resolution": dreaminaResolutionRatios[Dreamina4K]},
 	}
-	task, res := dreaminaTask(t, Dreamina720P, 5, requested4K) // delivered 720p
+	task, res := dreaminaTask(t, Dreamina720P, 108900, requested4K)
 	got := usd(DreaminaSettleQuota(task, res))
 	if got < 2.095 || got > 2.105 {
 		t.Errorf("delivered 720p must bill $2.10, got $%.4f", got)
 	}
 }
 
+// A genuine 4K delivery picks up the 4k tier: 3.89/0.76 = 5.118x the 720p base.
+func TestDreaminaHonoursDelivered4k(t *testing.T) {
+	bc := &model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 1}
+	task4k, res := dreaminaTask(t, Dreamina4K, 108900, bc)
+	task720, res2 := dreaminaTask(t, Dreamina720P, 108900, bc)
+	got4k, got720 := DreaminaSettleQuota(task4k, res), DreaminaSettleQuota(task720, res2)
+
+	want := dreaminaResolutionRatios[Dreamina4K] // 3.89 / 0.76
+	got := float64(got4k) / float64(got720)
+	if got < want-0.001 || got > want+0.001 {
+		t.Errorf("4k tier: got %.4f, want %.4f", got, want)
+	}
+}
+
 // A discount reaches this path through GroupRatio.
 func TestDreaminaAppliesGroupRatio(t *testing.T) {
-	task, res := dreaminaTask(t, Dreamina720P, 5,
-		&model.TaskBillingContext{ModelPrice: testModelPrice, GroupRatio: 0.95})
+	task, res := dreaminaTask(t, Dreamina720P, 108900,
+		&model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 0.95})
 	got := usd(DreaminaSettleQuota(task, res))
 	if got < 1.990 || got > 2.000 {
 		t.Errorf("0.95 discount: got $%.4f, want ~$1.995", got)
@@ -106,17 +118,17 @@ func TestDreaminaAppliesGroupRatio(t *testing.T) {
 // carried from submit time while the resolution still comes from the response.
 func TestDreaminaKeepsVideoInputTierFromSubmit(t *testing.T) {
 	bc := &model.TaskBillingContext{
-		ModelPrice:  testModelPrice,
+		ModelRatio:  testModelRatio,
 		GroupRatio:  1,
-		OtherRatios: map[string]float64{"resolution": dreaminaVideoInputRatios[Dreamina720P], "seconds": 5},
+		OtherRatios: map[string]float64{"resolution": dreaminaVideoInputRatios[Dreamina720P]},
 	}
-	task, res := dreaminaTask(t, Dreamina720P, 5, bc)
-	got := usd(DreaminaSettleQuota(task, res))
-	want := testModelPrice * 5 * dreaminaVideoInputRatios[Dreamina720P]
-	if got < want-0.005 || got > want+0.005 {
-		t.Errorf("video input 720p: got $%.4f, want $%.4f", got, want)
+	task, res := dreaminaTask(t, Dreamina720P, 108900, bc)
+	got := DreaminaSettleQuota(task, res)
+	want := 108900.0 * testModelRatio * dreaminaVideoInputRatios[Dreamina720P]
+	if float64(got) < want-2 || float64(got) > want+2 {
+		t.Errorf("video input 720p: got %d, want ~%d", got, int(want))
 	}
-	// And the two tables must never collide, or this recovery is ambiguous.
+	// The two tables must never collide, or this recovery is ambiguous.
 	for tier, noVideo := range dreaminaResolutionRatios {
 		for _, withVideo := range dreaminaVideoInputRatios {
 			if noVideo == withVideo {
@@ -151,7 +163,6 @@ func TestDreaminaHonoursSizeField(t *testing.T) {
 		}
 	}
 
-	// An explicit upstream value already set must not be overwritten.
 	out := &requestPayload{Resolution: "720p"}
 	applyDreaminaResolution(&relaycommon.TaskSubmitReq{Size: "4k"}, out)
 	if out.Resolution != "720p" {
@@ -159,42 +170,35 @@ func TestDreaminaHonoursSizeField(t *testing.T) {
 	}
 }
 
-// No resolution given must bill the tier the vendor will actually render, or the
-// pre-charge is wrong from the start.
-func TestDreaminaDefaultsToVendorDefaultTier(t *testing.T) {
-	if got := dreaminaTierRatio("", false); got != 1.0 {
-		t.Errorf("empty resolution should bill the 720p base, got %v", got)
-	}
-	ratios := dreaminaRatios(0, "", false)
-	if ratios["seconds"] != 5 {
-		t.Errorf("missing duration should assume the vendor default 5s, got %v", ratios["seconds"])
-	}
-}
-
 func TestDreaminaSettleNoOpCases(t *testing.T) {
-	bc := &model.TaskBillingContext{ModelPrice: testModelPrice, GroupRatio: 1}
+	bc := &model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 1}
 
 	if got := DreaminaSettleQuota(nil, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}); got != 0 {
 		t.Errorf("nil task: got %d", got)
 	}
-	task, _ := dreaminaTask(t, Dreamina720P, 5, bc)
+	task, _ := dreaminaTask(t, Dreamina720P, 108900, bc)
 	if got := DreaminaSettleQuota(task, nil); got != 0 {
 		t.Errorf("nil result: got %d", got)
 	}
 	if got := DreaminaSettleQuota(task, &relaycommon.TaskInfo{Status: model.TaskStatusInProgress}); got != 0 {
 		t.Errorf("in-progress: got %d", got)
 	}
-	// Failed tasks are refunded elsewhere; settling here would charge for nothing.
 	if got := DreaminaSettleQuota(task, &relaycommon.TaskInfo{Status: model.TaskStatusFailure}); got != 0 {
 		t.Errorf("failed: got %d", got)
 	}
-	// No duration reported.
-	noDur, res := dreaminaTask(t, Dreamina720P, 0, bc)
-	if got := DreaminaSettleQuota(noDur, res); got != 0 {
-		t.Errorf("zero duration: got %d", got)
+	// Vendor reported no usage.
+	noUsage, res := dreaminaTask(t, Dreamina720P, 0, bc)
+	if got := DreaminaSettleQuota(noUsage, res); got != 0 {
+		t.Errorf("zero tokens: got %d", got)
 	}
-	// Another model on the same adaptor must be left alone.
-	other, res2 := dreaminaTask(t, Dreamina720P, 5, bc)
+	// No billing context.
+	bare := &model.Task{Data: json.RawMessage(`{"status":"succeeded","usage":{"total_tokens":1000}}`)}
+	bare.Properties.OriginModelName = dreaminaModel
+	if got := DreaminaSettleQuota(bare, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}); got != 0 {
+		t.Errorf("no billing context: got %d", got)
+	}
+	// Another model on the same adaptor.
+	other, res2 := dreaminaTask(t, Dreamina720P, 108900, bc)
 	other.Properties.OriginModelName = "doubao-seedance-1-0-pro-250528"
 	other.Properties.UpstreamModelName = "doubao-seedance-1-0-pro-250528"
 	if got := DreaminaSettleQuota(other, res2); got != 0 {
