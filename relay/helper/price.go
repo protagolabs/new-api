@@ -55,6 +55,17 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 		relayInfo.UsingGroup = autoGroup.(string)
 	}
 
+	// Per-model discount for this group takes precedence over both the
+	// group-pair ratio and the plain group ratio: it is the most specific rule
+	// available, and it is the only one that can differ per model. Checked
+	// against the caller's own group (UserGroup), not the channel group.
+	if modelRatio, ok := ratio_setting.GetGroupModelRatio(relayInfo.UserGroup, relayInfo.OriginModelName); ok {
+		groupRatioInfo.GroupSpecialRatio = modelRatio
+		groupRatioInfo.GroupRatio = modelRatio
+		groupRatioInfo.HasSpecialRatio = true
+		return groupRatioInfo
+	}
+
 	// check user group special ratio
 	userGroupRatio, ok := ratio_setting.GetGroupGroupRatio(relayInfo.UserGroup, relayInfo.UsingGroup)
 	if ok {
