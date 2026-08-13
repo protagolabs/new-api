@@ -50,6 +50,7 @@ const getGroupDefaults = (settings: BillingSettings) => ({
   DefaultUseAutoGroup: settings.DefaultUseAutoGroup,
   GroupSpecialUsableGroup:
     settings['group_ratio_setting.group_special_usable_group'],
+  GroupModelRatio: settings['group_model_ratio_setting.group_model_ratio'],
 })
 
 const BILLING_SECTIONS = [
