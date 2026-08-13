@@ -10,10 +10,16 @@ import (
 
 const dreaminaModel = "dreamina-seedance-2-0-260128"
 
-// ModelRatio is quota per token, chosen so a 5s/720p video -- 108900 tokens,
-// the exact value captured from production on 2026-08-13 -- still costs $2.10.
-// 1050000 / 108900 = 9.641873...
-const testModelRatio = 9.6419
+// ModelRatio is the vendor's list rate as quota per token: the $7.0/M base tier
+// at the platform's 1-ratio-equals-$2/M convention. We resell at list, so a
+// 5s/720p video (108900 tokens, captured from production 2026-08-13) must come
+// out at the published $0.76.
+const testModelRatio = 3.5
+
+// Seedance 2.5's base list rate is $10.70/M tokens.
+const testModelRatio25 = 5.35
+
+const dreaminaModel25 = "dreamina-seedance-2-5-260628"
 
 func dreaminaTask(t *testing.T, resolution string, tokens int, bc *model.TaskBillingContext) (*model.Task, *relaycommon.TaskInfo) {
 	t.Helper()
@@ -41,8 +47,8 @@ func TestDreaminaBillsByTokens(t *testing.T) {
 	bc := &model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 1}
 	task, res := dreaminaTask(t, Dreamina720P, 108900, bc)
 	got := usd(DreaminaSettleQuota(task, res))
-	if got < 2.095 || got > 2.105 {
-		t.Errorf("5s/720p (108900 tokens) should be $2.10, got $%.4f", got)
+	if got < 0.760 || got > 0.765 {
+		t.Errorf("5s/720p (108900 tokens) should be the list $0.7623, got $%.4f", got)
 	}
 }
 
@@ -83,12 +89,12 @@ func TestDreaminaBillsDeliveredResolutionNotRequested(t *testing.T) {
 	requested4K := &model.TaskBillingContext{
 		ModelRatio:  testModelRatio,
 		GroupRatio:  1,
-		OtherRatios: map[string]float64{"resolution": dreaminaResolutionRatios[Dreamina4K]},
+		OtherRatios: map[string]float64{"resolution": dreaminaPricingByFamily["dreamina-seedance-2-0"].resolution[Dreamina4K]},
 	}
 	task, res := dreaminaTask(t, Dreamina720P, 108900, requested4K)
 	got := usd(DreaminaSettleQuota(task, res))
-	if got < 2.095 || got > 2.105 {
-		t.Errorf("delivered 720p must bill $2.10, got $%.4f", got)
+	if got < 0.760 || got > 0.765 {
+		t.Errorf("delivered 720p must bill the list $0.7623, got $%.4f", got)
 	}
 }
 
@@ -101,7 +107,7 @@ func TestDreaminaHonoursDelivered4k(t *testing.T) {
 	task720, res2 := dreaminaTask(t, Dreamina720P, 108900, bc)
 	got4k, got720 := DreaminaSettleQuota(task4k, res), DreaminaSettleQuota(task720, res2)
 
-	want := dreaminaResolutionRatios[Dreamina4K] // 3.89 / 0.76
+	want := dreaminaPricingByFamily["dreamina-seedance-2-0"].resolution[Dreamina4K] // 3.89 / 0.76
 	got := float64(got4k) / float64(got720)
 	if got < want-0.001 || got > want+0.001 {
 		t.Errorf("4k tier: got %.4f, want %.4f", got, want)
@@ -113,8 +119,9 @@ func TestDreaminaAppliesGroupRatio(t *testing.T) {
 	task, res := dreaminaTask(t, Dreamina720P, 108900,
 		&model.TaskBillingContext{ModelRatio: testModelRatio, GroupRatio: 0.95})
 	got := usd(DreaminaSettleQuota(task, res))
-	if got < 1.990 || got > 2.000 {
-		t.Errorf("0.95 discount: got $%.4f, want ~$1.995", got)
+	want := 0.7623 * 0.95
+	if got < want-0.005 || got > want+0.005 {
+		t.Errorf("0.95 discount: got $%.4f, want ~$%.4f", got, want)
 	}
 }
 
@@ -124,17 +131,18 @@ func TestDreaminaKeepsVideoInputTierFromSubmit(t *testing.T) {
 	bc := &model.TaskBillingContext{
 		ModelRatio:  testModelRatio,
 		GroupRatio:  1,
-		OtherRatios: map[string]float64{"resolution": dreaminaVideoInputRatios[Dreamina720P]},
+		OtherRatios: map[string]float64{"resolution": dreaminaPricingByFamily["dreamina-seedance-2-0"].videoInput[Dreamina720P]},
 	}
 	task, res := dreaminaTask(t, Dreamina720P, 108900, bc)
 	got := DreaminaSettleQuota(task, res)
-	want := 108900.0 * testModelRatio * dreaminaVideoInputRatios[Dreamina720P]
+	want := 108900.0 * testModelRatio * dreaminaPricingByFamily["dreamina-seedance-2-0"].videoInput[Dreamina720P]
 	if float64(got) < want-2 || float64(got) > want+2 {
 		t.Errorf("video input 720p: got %d, want ~%d", got, int(want))
 	}
 	// The two tables must never collide, or this recovery is ambiguous.
-	for tier, noVideo := range dreaminaResolutionRatios {
-		for _, withVideo := range dreaminaVideoInputRatios {
+	p20 := dreaminaPricingByFamily["dreamina-seedance-2-0"]
+	for tier, noVideo := range p20.resolution {
+		for _, withVideo := range p20.videoInput {
 			if noVideo == withVideo {
 				t.Errorf("tier %s: no-video ratio %v collides with a video-input ratio", tier, noVideo)
 			}
@@ -229,9 +237,120 @@ func TestDreaminaRatioTableMatchesVendorUnitPrices(t *testing.T) {
 		{Dreamina4K, true, 2.4 / 7.0},
 	}
 	for _, tc := range cases {
-		got := dreaminaTierRatio(tc.res, tc.hasVideo)
+		got := dreaminaTierRatio(dreaminaModel, tc.res, tc.hasVideo)
 		if got < tc.want-1e-9 || got > tc.want+1e-9 {
 			t.Errorf("res=%s hasVideo=%v: got ratio %v, want %v (vendor unit price)", tc.res, tc.hasVideo, got, tc.want)
+		}
+	}
+}
+
+// dreamina25Task builds a finished 2.5 task. Kept separate because the model
+// name is what selects the pricing family.
+func dreamina25Task(t *testing.T, resolution string, tokens int, bc *model.TaskBillingContext) (*model.Task, *relaycommon.TaskInfo) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"model":      dreaminaModel25,
+		"status":     "succeeded",
+		"resolution": resolution,
+		"usage":      map[string]int{"completion_tokens": tokens, "total_tokens": tokens},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &model.Task{Data: body}
+	task.Properties.OriginModelName = dreaminaModel25
+	task.PrivateData.BillingContext = bc
+	return task, &relaycommon.TaskInfo{Status: model.TaskStatusSuccess}
+}
+
+// 2.5's published price examples, reproduced end to end. Token counts are the
+// vendor's own examples divided by its $10.70/M base rate.
+func TestDreamina25MatchesPublishedPrices(t *testing.T) {
+	bc := &model.TaskBillingContext{ModelRatio: testModelRatio25, GroupRatio: 1}
+	for _, tc := range []struct {
+		res  string
+		list float64
+	}{
+		{Dreamina480P, 0.514},
+		{Dreamina720P, 1.156},
+	} {
+		tokens := int(tc.list / 10.70 * 1e6)
+		task, res := dreamina25Task(t, tc.res, tokens, bc)
+		got := usd(DreaminaSettleQuota(task, res))
+		if got < tc.list-0.005 || got > tc.list+0.005 {
+			t.Errorf("2.5 %s 5s: got $%.4f, want the published $%.3f", tc.res, got, tc.list)
+		}
+	}
+}
+
+// 2.5 charges the same rate for 480p and 720p -- unlike 2.0, its only tier axis
+// is video input. Billing 2.5 with 2.0's tiers would be a silent mispricing.
+func TestDreamina25HasNoResolutionTier(t *testing.T) {
+	if got := dreaminaTierRatio(dreaminaModel25, Dreamina480P, false); got != 1.0 {
+		t.Errorf("2.5 480p should be the base rate, got %v", got)
+	}
+	if got := dreaminaTierRatio(dreaminaModel25, Dreamina720P, false); got != 1.0 {
+		t.Errorf("2.5 720p should be the base rate, got %v", got)
+	}
+	// $6.40 / $10.70 -- and distinct from 2.0's $4.3/$7.0, which is the whole
+	// point of splitting the tables by family.
+	want := 6.40 / 10.70
+	if got := dreaminaTierRatio(dreaminaModel25, Dreamina720P, true); got < want-1e-9 || got > want+1e-9 {
+		t.Errorf("2.5 video input: got %v, want %v", got, want)
+	}
+	if same := dreaminaTierRatio(dreaminaModel, Dreamina720P, true); same == want {
+		t.Error("2.0 and 2.5 video-input ratios must differ, or the families are interchangeable")
+	}
+}
+
+// 2.5 does not offer 1080p/4K. A caller who asks anyway must not get another
+// family's tier -- the family's base rate is the safe answer, and upstream
+// rejects the request regardless.
+func TestDreamina25UnsupportedTiersFallBackToBase(t *testing.T) {
+	for _, res := range []string{Dreamina1080P, Dreamina4K} {
+		if got := dreaminaTierRatio(dreaminaModel25, res, false); got != 1.0 {
+			t.Errorf("2.5 %s should fall back to the base rate, got %v", res, got)
+		}
+	}
+}
+
+// Each family must resolve to its own table, matched by longest prefix.
+func TestDreaminaFamilyRouting(t *testing.T) {
+	for _, tc := range []struct {
+		model    string
+		wantBase float64
+	}{
+		{"dreamina-seedance-2-0-260128", 7.0},
+		{"dreamina-seedance-2-0-fast-260128", 7.0},
+		{"dreamina-seedance-2-5-260628", 10.70},
+		{"Dreamina-Seedance-2-5-260628", 10.70},
+	} {
+		p, ok := dreaminaFamilyFor(tc.model)
+		if !ok {
+			t.Errorf("%s: no family matched", tc.model)
+			continue
+		}
+		if p.base != tc.wantBase {
+			t.Errorf("%s: matched base $%.2f/M, want $%.2f/M", tc.model, p.base, tc.wantBase)
+		}
+	}
+	// An unknown release must NOT inherit a neighbouring family's rates.
+	if _, ok := dreaminaFamilyFor("dreamina-seedance-3-0-270101"); ok {
+		t.Error("an unconfigured family must not match, or its price is silently wrong")
+	}
+}
+
+// Within every family the two tier tables must share no value, otherwise
+// recovering hasVideo from the submit-time ratio is ambiguous.
+func TestDreaminaTierTablesDoNotCollide(t *testing.T) {
+	for family, p := range dreaminaPricingByFamily {
+		for tier, noVideo := range p.resolution {
+			for _, withVideo := range p.videoInput {
+				if noVideo == withVideo {
+					t.Errorf("%s tier %s: no-video ratio %v collides with a video-input ratio",
+						family, tier, noVideo)
+				}
+			}
 		}
 	}
 }
