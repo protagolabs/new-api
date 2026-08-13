@@ -306,10 +306,10 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 	groupRatio := ratio_setting.GetGroupRatio(group)
 	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(group, group)
 
-	// A per-model discount for this group wins, matching HandleGroupRatio. This
-	// recompute path is separate from the relay one, so without this the
-	// discount would silently not apply to token-recomputed tasks.
-	groupModelRatio, hasGroupModelRatio := ratio_setting.GetGroupModelRatio(group, modelName)
+	// A per-model discount wins, matching HandleGroupRatio. This recompute path
+	// is separate from the relay one, so without this the discount would
+	// silently not apply to token-recomputed tasks.
+	groupModelRatio, hasGroupModelRatio := ratio_setting.GetModelRatioForUser(task.UserId, group, modelName)
 
 	var finalGroupRatio float64
 	switch {

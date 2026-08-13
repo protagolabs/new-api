@@ -111,6 +111,58 @@ func TestGetGroupModelRatioEdgeCases(t *testing.T) {
 	}
 }
 
+// Scoping by user is what the real deployment uses: the customer stays in
+// `default` so routing is untouched, and only his own rules apply.
+func TestGetModelRatioForUser(t *testing.T) {
+	setRules(t, map[string]map[string]float64{
+		"user:530": {"MiniMax-H3": 0.95, "happyhorse-1.1-*": 0.55},
+		"default":  {"MiniMax-H3": 0.8, "gpt-4.1": 0.9},
+	})
+
+	cases := []struct {
+		userID int
+		group  string
+		model  string
+		want   float64
+		ok     bool
+	}{
+		// The user's own rule beats the group's rule for the same model.
+		{530, "default", "MiniMax-H3", 0.95, true},
+		{530, "default", "happyhorse-1.1-t2v", 0.55, true},
+		// No user rule -> fall through to the group's.
+		{530, "default", "gpt-4.1", 0.9, true},
+		// Another user in the same group only sees the group's rules.
+		{999, "default", "MiniMax-H3", 0.8, true},
+		{999, "default", "happyhorse-1.1-t2v", 0, false},
+		// Neither scope has a rule.
+		{530, "default", "claude-opus-4-6", 0, false},
+		// An unusable id must not be turned into a scope key that could collide.
+		{0, "default", "gpt-4.1", 0.9, true},
+		{-1, "default", "gpt-4.1", 0.9, true},
+	}
+	for _, tc := range cases {
+		got, ok := GetModelRatioForUser(tc.userID, tc.group, tc.model)
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("user=%d group=%s model=%s: got %v (ok=%v), want %v (ok=%v)",
+				tc.userID, tc.group, tc.model, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestUserRuleKey(t *testing.T) {
+	if got := UserRuleKey(530); got != "user:530" {
+		t.Errorf("got %q, want user:530", got)
+	}
+	// Zero and negative ids yield an empty key, which GetGroupModelRatio
+	// rejects outright -- otherwise "user:0" could be configured by accident and
+	// silently apply to unauthenticated paths.
+	for _, id := range []int{0, -1} {
+		if got := UserRuleKey(id); got != "" {
+			t.Errorf("id %d: got %q, want empty", id, got)
+		}
+	}
+}
+
 func TestContainsGroupModelRules(t *testing.T) {
 	setRules(t, map[string]map[string]float64{
 		"has":  {"m": 0.5},
