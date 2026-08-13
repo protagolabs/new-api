@@ -54,3 +54,48 @@ func GetVideoInputRatio(modelName, resolution string, hasVideo bool) (float64, b
 	}
 	return price / base, true
 }
+
+// Ratio keys recorded on the task at submit time. They are split because the
+// two dimensions have different sources of truth at settlement: whether the
+// input carried a video is a fact about the request the vendor cannot override,
+// while the output resolution must be read back from the response.
+const (
+	RatioKeyVideoInput = "video_input"
+	RatioKeyResolution = "resolution"
+)
+
+// GetVideoInputOnlyRatio isolates the input-media dimension: the base-tier
+// price with/without a video input, relative to without.
+func GetVideoInputOnlyRatio(modelName string, hasVideo bool) (float64, bool) {
+	prices, ok := videoPriceTable[modelName]
+	base := prices[videoPriceKey{}]
+	if !ok || base <= 0 {
+		return 0, false
+	}
+	price, ok := prices[videoPriceKey{hasVideo: hasVideo}]
+	if !ok || price <= 0 {
+		return 1.0, true
+	}
+	return price / base, true
+}
+
+// GetResolutionRatio isolates the output-resolution dimension, holding the
+// input-media dimension fixed. Multiplying this by GetVideoInputOnlyRatio
+// reproduces GetVideoInputRatio exactly.
+func GetResolutionRatio(modelName, resolution string, hasVideo bool) (float64, bool) {
+	prices, ok := videoPriceTable[modelName]
+	if !ok {
+		return 0, false
+	}
+	tierBase := prices[videoPriceKey{hasVideo: hasVideo}]
+	if tierBase <= 0 {
+		return 0, false
+	}
+	res := strings.ToLower(strings.TrimSpace(resolution))
+	price, ok := prices[videoPriceKey{is1080p: res == "1080p", is4k: res == "4k", hasVideo: hasVideo}]
+	if !ok || price <= 0 {
+		// Unconfigured combination (e.g. fast has no 1080p/4k) bills at the tier base.
+		return 1.0, true
+	}
+	return price / tierBase, true
+}
