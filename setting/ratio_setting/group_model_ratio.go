@@ -1,6 +1,7 @@
 package ratio_setting
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/setting/config"
@@ -52,9 +53,36 @@ func GetGroupModelRatioSetting() *GroupModelRatioSetting {
 	return &groupModelRatioSetting
 }
 
-// GetGroupModelRatio resolves the discount for a (group, model) pair.
+// UserRuleKey is the scope key for a single user's rules: `user:<id>`.
 //
-// Returns false when the group has no entry or no rule matches the model, in
+// Scoping by group alone turned out to be unusable for a one-customer discount:
+// a group only routes to channels that list it explicitly, so moving the
+// customer into a new group cut him off from the 25 `default` channels (72
+// models) and every channel added later would have to remember to include the
+// new group. Scoping by user leaves routing untouched.
+func UserRuleKey(userID int) string {
+	if userID <= 0 {
+		return ""
+	}
+	return "user:" + strconv.Itoa(userID)
+}
+
+// GetModelRatioForUser resolves the discount for a request, preferring a rule
+// scoped to this specific user over one scoped to their group.
+//
+// Returns false when neither scope has a matching rule, in which case the
+// caller must fall back to the normal group ratio.
+func GetModelRatioForUser(userID int, group, modelName string) (float64, bool) {
+	if r, ok := GetGroupModelRatio(UserRuleKey(userID), modelName); ok {
+		return r, true
+	}
+	return GetGroupModelRatio(group, modelName)
+}
+
+// GetGroupModelRatio resolves the discount for a (scope, model) pair, where
+// scope is a user group or a `user:<id>` key.
+//
+// Returns false when the scope has no entry or no rule matches the model, in
 // which case the caller must fall back to the normal group ratio -- a missing
 // rule must never be read as "free".
 func GetGroupModelRatio(group, modelName string) (float64, bool) {
