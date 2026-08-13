@@ -13,6 +13,12 @@ import (
 
 func SetApiRouter(router *gin.Engine) {
 	apiRouter := router.Group("/api")
+	// CORS must be in the group's chain, not left to the global middleware in
+	// SetRelayRouter: gin snapshots the global chain at route-registration time,
+	// and SetApiRouter runs before SetRelayRouter's router.Use(CORS), so /api
+	// routes registered here would otherwise send responses without
+	// Access-Control-Allow-Origin (breaking cross-origin admin dashboards).
+	apiRouter.Use(middleware.CORS())
 	apiRouter.Use(middleware.RouteTag("api"))
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
