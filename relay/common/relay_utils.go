@@ -145,10 +145,43 @@ func validatePrompt(prompt string) *dto.TaskError {
 // overflow quota calculation into a negative charge.
 const MaxTaskDurationSeconds = 3600
 
+// AutoTaskDuration is the vendor sentinel meaning "let the model choose the
+// output length". Dreamina Seedance 2.5 *requires* it for edit and extend tasks,
+// so it has to survive validation rather than being rejected as a negative.
+//
+// It is only accepted for models that declare support below. Every adaptor
+// already treats a non-positive duration as "unset" and substitutes its own
+// default, so a stray -1 cannot become a negative billing multiplier -- but
+// silently swapping in a default would leave the caller believing -1 took
+// effect, which is worse than a clear rejection.
+const AutoTaskDuration = -1
+
+// modelsAcceptingAutoDuration lists the model-name prefixes whose upstream
+// understands AutoTaskDuration. Keep this narrow: a model that is billed per
+// second of output has no meaningful "auto" to bill for, which is why only the
+// token-billed Dreamina family is here.
+var modelsAcceptingAutoDuration = []string{
+	"dreamina-seedance-2-5",
+}
+
+// AcceptsAutoDuration reports whether a model may be given AutoTaskDuration.
+func AcceptsAutoDuration(modelName string) bool {
+	name := strings.ToLower(strings.TrimSpace(modelName))
+	for _, prefix := range modelsAcceptingAutoDuration {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateTaskDurationBounds(req TaskSubmitReq) *dto.TaskError {
 	seconds := req.Duration
 	if seconds == 0 && req.Seconds != "" {
 		seconds, _ = strconv.Atoi(req.Seconds)
+	}
+	if seconds == AutoTaskDuration && AcceptsAutoDuration(req.Model) {
+		return nil
 	}
 	if seconds < 0 || seconds > MaxTaskDurationSeconds {
 		return createTaskError(fmt.Errorf("seconds must be between 1 and %d", MaxTaskDurationSeconds), "invalid_seconds", http.StatusBadRequest, true)

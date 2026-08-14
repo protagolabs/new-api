@@ -406,3 +406,62 @@ func TestDreaminaAcceptsBothDurationSpellings(t *testing.T) {
 		}
 	}
 }
+
+// Seedance 2.5 requires duration = -1 for edit and extend tasks, where the
+// output length comes from the source video. The sentinel must reach the vendor
+// untouched -- and must NOT be accepted for models whose upstream has no notion
+// of it, where silently substituting a default would hide the mismatch.
+func TestDreaminaAutoDurationSentinel(t *testing.T) {
+	a := &TaskAdaptor{}
+	for _, tc := range []struct {
+		name  string
+		model string
+		want  int // 0 means "no duration sent upstream"
+	}{
+		{"2.5 accepts -1", dreaminaModel25, relaycommon.AutoTaskDuration},
+		{"2.0 does not", dreaminaModel, 0},
+		{"other doubao does not", "doubao-seedance-1-0-pro-250528", 0},
+	} {
+		req := relaycommon.TaskSubmitReq{Model: tc.model, Duration: relaycommon.AutoTaskDuration}
+		out, err := a.convertToRequestPayload(&req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		got := 0
+		if out.Duration != nil {
+			got = int(*out.Duration)
+		}
+		if got != tc.want {
+			t.Errorf("%s: sent duration=%d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// omni_reference_task_type is 2.5's way of stating the task type up front. It
+// has to survive the metadata round-trip; before this field existed it was
+// dropped silently and the vendor fell back to inferring the type.
+func TestDreaminaOmniReferenceTaskTypePassesThrough(t *testing.T) {
+	a := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:    dreaminaModel25,
+		Prompt:   "extend this clip",
+		Metadata: map[string]any{"omni_reference_task_type": "extend"},
+	}
+	out, err := a.convertToRequestPayload(&req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OmniReferenceTaskType != "extend" {
+		t.Errorf("sent %q upstream, want %q", out.OmniReferenceTaskType, "extend")
+	}
+
+	// Absent from the request means absent from the payload -- 2.0 rejects it.
+	plain := relaycommon.TaskSubmitReq{Model: dreaminaModel, Prompt: "a cat"}
+	out2, err := a.convertToRequestPayload(&plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2.OmniReferenceTaskType != "" {
+		t.Errorf("unset field leaked as %q", out2.OmniReferenceTaskType)
+	}
+}

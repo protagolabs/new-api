@@ -53,15 +53,21 @@ type requestPayload struct {
 	Tools                 []struct {
 		Type string `json:"type,omitempty"`
 	} `json:"tools,omitempty"`
-	SafetyIdentifier string         `json:"safety_identifier,omitempty"`
-	Priority         *dto.IntValue  `json:"priority,omitempty"`
-	Resolution       string         `json:"resolution,omitempty"`
-	Ratio            string         `json:"ratio,omitempty"`
-	Duration         *dto.IntValue  `json:"duration,omitempty"`
-	Frames           *dto.IntValue  `json:"frames,omitempty"`
-	Seed             *dto.IntValue  `json:"seed,omitempty"`
-	CameraFixed      *dto.BoolValue `json:"camera_fixed,omitempty"`
-	Watermark        *dto.BoolValue `json:"watermark,omitempty"`
+	SafetyIdentifier string        `json:"safety_identifier,omitempty"`
+	Priority         *dto.IntValue `json:"priority,omitempty"`
+	Resolution       string        `json:"resolution,omitempty"`
+	Ratio            string        `json:"ratio,omitempty"`
+	// OmniReferenceTaskType is Seedance 2.5 only: "auto" / "edit" / "extend".
+	// Stating it explicitly moves the vendor's task-type check from the async
+	// phase to the synchronous one, so a mismatch fails at submit instead of
+	// after the video is already being generated. 2.0 infers the type instead
+	// and rejects this field, hence omitempty.
+	OmniReferenceTaskType string         `json:"omni_reference_task_type,omitempty"`
+	Duration              *dto.IntValue  `json:"duration,omitempty"`
+	Frames                *dto.IntValue  `json:"frames,omitempty"`
+	Seed                  *dto.IntValue  `json:"seed,omitempty"`
+	CameraFixed           *dto.BoolValue `json:"camera_fixed,omitempty"`
+	Watermark             *dto.BoolValue `json:"watermark,omitempty"`
 }
 
 type responsePayload struct {
@@ -323,6 +329,12 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		r.Duration = lo.ToPtr(dto.IntValue(sec))
 	} else if req.Duration > 0 {
 		r.Duration = lo.ToPtr(dto.IntValue(req.Duration))
+	} else if req.Duration == relaycommon.AutoTaskDuration &&
+		relaycommon.AcceptsAutoDuration(r.Model) {
+		// Pass the "auto" sentinel through untouched: Seedance 2.5 requires it
+		// for edit and extend, where the output length is dictated by the source
+		// video rather than chosen by the caller.
+		r.Duration = lo.ToPtr(dto.IntValue(relaycommon.AutoTaskDuration))
 	}
 
 	r.Content = lo.Reject(r.Content, func(c ContentItem, _ int) bool { return c.Type == "text" })
