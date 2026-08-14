@@ -314,8 +314,15 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
 
+	// Accept both spellings of the duration. `seconds` (string) wins because it
+	// is the OpenAI-compatible field, but `duration` (integer) must work too --
+	// it is what the vendor's own docs and our examples use, and dropping it
+	// silently let the vendor fall back to its default: a request for 5s came
+	// back as 10s, at double the cost. Every other task adaptor reads both.
 	if sec, _ := strconv.Atoi(req.Seconds); sec > 0 {
 		r.Duration = lo.ToPtr(dto.IntValue(sec))
+	} else if req.Duration > 0 {
+		r.Duration = lo.ToPtr(dto.IntValue(req.Duration))
 	}
 
 	r.Content = lo.Reject(r.Content, func(c ContentItem, _ int) bool { return c.Type == "text" })
