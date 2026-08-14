@@ -376,3 +376,33 @@ func TestIsDreaminaSeedance2(t *testing.T) {
 		}
 	}
 }
+
+// Both spellings of the duration must reach the vendor. Dropping `duration`
+// silently let the vendor apply its own default: a 5s request came back as 10s
+// and cost twice as much (observed in production 2026-08-14, 96475 tokens for
+// what should have been ~48000). Every other task adaptor reads both fields.
+func TestDreaminaAcceptsBothDurationSpellings(t *testing.T) {
+	a := &TaskAdaptor{}
+	for _, tc := range []struct {
+		name string
+		req  relaycommon.TaskSubmitReq
+		want int
+	}{
+		{"seconds only", relaycommon.TaskSubmitReq{Model: dreaminaModel25, Seconds: "5"}, 5},
+		{"duration only", relaycommon.TaskSubmitReq{Model: dreaminaModel25, Duration: 5}, 5},
+		{"seconds wins", relaycommon.TaskSubmitReq{Model: dreaminaModel25, Seconds: "7", Duration: 5}, 7},
+		{"neither", relaycommon.TaskSubmitReq{Model: dreaminaModel25}, 0},
+	} {
+		out, err := a.convertToRequestPayload(&tc.req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		got := 0
+		if out.Duration != nil {
+			got = int(*out.Duration)
+		}
+		if got != tc.want {
+			t.Errorf("%s: sent duration=%d upstream, want %d", tc.name, got, tc.want)
+		}
+	}
+}
