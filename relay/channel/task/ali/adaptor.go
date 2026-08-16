@@ -58,10 +58,13 @@ type AliVideoParameters struct {
 	Size         string `json:"size,omitempty"`          // 尺寸: 如 "832*480"（文生视频）
 	Ratio        string `json:"ratio,omitempty"`         // 画幅: 16:9 / 9:16 / 1:1（HappyHorse）
 	Duration     int    `json:"duration,omitempty"`      // 时长: 3-10秒
-	PromptExtend bool   `json:"prompt_extend,omitempty"` // 是否开启prompt智能改写
-	Watermark    bool   `json:"watermark,omitempty"`     // 是否添加水印
-	Audio        *bool  `json:"audio,omitempty"`         // 是否添加音频（wan2.5）
-	Seed         int    `json:"seed,omitempty"`          // 随机数种子
+	PromptExtend *bool  `json:"prompt_extend,omitempty"` // 是否开启prompt智能改写
+	// Watermark 必须是指针：值类型 bool 配 omitempty 会把 false 整个字段丢掉，
+	// 上游收不到就套用自己的默认值（带水印）。客户实测 HappyHorse 出片有水印
+	// 就是这么来的——我们以为在传 false，实际什么都没传。
+	Watermark *bool `json:"watermark,omitempty"` // 是否添加水印
+	Audio     *bool `json:"audio,omitempty"`     // 是否添加音频（wan2.5）
+	Seed      *int  `json:"seed,omitempty"`      // 随机数种子
 }
 
 // AliVideoResponse 阿里通义万相响应
@@ -373,8 +376,8 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 			ImgURL: firstTaskImage(req),
 		},
 		Parameters: &AliVideoParameters{
-			PromptExtend: true, // 默认开启智能改写
-			Watermark:    false,
+			PromptExtend: lo.ToPtr(true),  // 默认开启智能改写
+			Watermark:    lo.ToPtr(false), // 显式关水印，见字段注释
 		},
 	}
 
