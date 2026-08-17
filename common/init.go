@@ -196,8 +196,17 @@ func initConstantEnv() {
 	constant.ErrorLogEnabled = GetEnvOrDefaultBool("ERROR_LOG_ENABLED", false)
 	// 任务轮询时查询的最大数量
 	constant.TaskQueryLimit = GetEnvOrDefault("TASK_QUERY_LIMIT", 1000)
-	// 异步任务超时时间（分钟），超过此时间未完成的任务将被标记为失败并退款。0 表示禁用。
+	// 异步任务软超时（分钟）：到点后先向上游确认任务状态，只有确认不到才判失败并退款。
+	// 上游明确回复"仍在进行"的任务会被放行，直到硬上限。0 表示禁用超时清理。
 	constant.TaskTimeoutMinutes = GetEnvOrDefault("TASK_TIMEOUT_MINUTES", 1440)
+	// 异步任务硬上限（分钟）：无论上游怎么说，超过此时间一律判失败并退款，
+	// 用于兜住上游永远返回"进行中"的僵尸任务。
+	constant.TaskTimeoutHardMinutes = GetEnvOrDefault("TASK_TIMEOUT_HARD_MINUTES", 1440)
+	if constant.TaskTimeoutHardMinutes < constant.TaskTimeoutMinutes {
+		// A hard limit below the soft one would make the probe unreachable and
+		// silently restore the old kill-on-the-clock behaviour.
+		constant.TaskTimeoutHardMinutes = constant.TaskTimeoutMinutes
+	}
 
 	soraPatchStr := GetEnvOrDefaultString("TASK_PRICE_PATCH", "")
 	if soraPatchStr != "" {

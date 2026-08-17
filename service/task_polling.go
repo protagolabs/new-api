@@ -41,22 +41,52 @@ var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
 // 每次最多处理 100 条，剩余的下个周期继续处理。
 // 使用 per-task CAS (UpdateWithStatus) 防止覆盖被正常轮询已推进的任务。
+//
+// 软超时只是"该去问问上游了"的信号，不是判死依据：确认仍在进行的任务会被放行，
+// 直到硬上限。见 probeUpstreamStatus 的说明——判死是不可逆的（progress 置 100%
+// 后任务永久退出轮询集合），而我们实测过 43 分钟才成功的视频任务。
 func sweepTimedOutTasks(ctx context.Context) {
 	if constant.TaskTimeoutMinutes <= 0 {
 		return
 	}
-	cutoff := time.Now().Unix() - int64(constant.TaskTimeoutMinutes)*60
-	tasks := model.GetTimedOutUnfinishedTasks(cutoff, 100)
+	now := time.Now().Unix()
+	softCutoff := now - int64(constant.TaskTimeoutMinutes)*60
+	hardCutoff := now - int64(constant.TaskTimeoutHardMinutes)*60
+	tasks := model.GetTimedOutUnfinishedTasks(softCutoff, 100)
 	if len(tasks) == 0 {
 		return
 	}
 
-	reason := fmt.Sprintf("任务超时（%d分钟）", constant.TaskTimeoutMinutes)
 	legacyReason := "任务超时（旧系统遗留任务，不进行退款，请联系管理员）"
-	now := time.Now().Unix()
 	timedOutCount := 0
 
 	for _, task := range tasks {
+		if ctx.Err() != nil {
+			// Probing costs one upstream request per task; give up promptly
+			// when the lease is lost rather than holding it for a full batch.
+			return
+		}
+		beyondHardLimit := task.SubmitTime < hardCutoff
+		verdict := probeUnknown
+		if !beyondHardLimit {
+			verdict, _ = probeUpstreamStatus(ctx, task)
+			if verdict == probeTerminal {
+				// The upstream has an answer. The regular polling pass runs
+				// right after this sweep and will settle it with the real
+				// result instead of a refund.
+				logger.LogInfo(ctx, fmt.Sprintf(
+					"sweepTimedOutTasks: task %s reached a terminal state upstream, leaving it to polling", task.TaskID))
+				continue
+			}
+			if verdict == probeAlive {
+				logger.LogInfo(ctx, fmt.Sprintf(
+					"sweepTimedOutTasks: task %s still running upstream, sparing it until the hard limit (%d min)",
+					task.TaskID, constant.TaskTimeoutHardMinutes))
+				continue
+			}
+		}
+
+		reason := timeoutReason(beyondHardLimit, verdict)
 		isLegacy := task.SubmitTime > 0 && task.SubmitTime < model.TaskRefundLegacyCutoff
 
 		oldStatus := task.Status
