@@ -151,11 +151,27 @@ func Distribute() func(c *gin.Context) {
 						//	common.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
 						//	message = "数据库一致性已被破坏，请联系管理员"
 						//}
+						recordDistributorRejection(c, modelRequest.Model, usingGroup, message)
 						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, message, types.ErrorCodeModelNotFound)
 						return
 					}
 					if channel == nil {
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						// A model nobody serves is a client mistake; one that
+						// exists but has no channel free right now is ours.
+						// Both used to answer 503, which sent a customer who had
+						// simply typed "MinMax-H3" instead of "MiniMax-H3" off
+						// believing our service was down.
+						status := http.StatusServiceUnavailable
+						message := i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model})
+						if !isKnownModel(modelRequest.Model) {
+							status = http.StatusNotFound
+							message = fmt.Sprintf("model %s does not exist", modelRequest.Model)
+							if suggestion := suggestModel(modelRequest.Model); suggestion != "" {
+								message = fmt.Sprintf("%s, did you mean %s?", message, suggestion)
+							}
+						}
+						recordDistributorRejection(c, modelRequest.Model, usingGroup, message)
+						abortWithOpenAiMessage(c, status, message, types.ErrorCodeModelNotFound)
 						return
 					}
 				}
