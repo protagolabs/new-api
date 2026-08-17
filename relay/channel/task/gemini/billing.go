@@ -121,22 +121,56 @@ func SizeToVeoAspectRatio(size string) string {
 	return "16:9"
 }
 
-// VeoResolutionRatio returns the pricing multiplier for the given resolution.
-// Standard resolutions (720p, 1080p) return 1.0.
-// 4K returns a model-specific multiplier based on Google's official pricing.
+// veoResolutionRatios maps a Veo 3.1 family to its per-resolution multiplier,
+// relative to that family's own 720p rate (which is what ModelPrice holds).
+//
+// Derived from the Gemini API standard tier, ai.google.dev/gemini-api/docs/pricing
+// as of 2026-08-17 (per second of video):
+//
+//	              720p     1080p    4k
+//	standard      $0.40    $0.40    $0.60
+//	fast          $0.10    $0.12    $0.30
+//	lite          $0.05    $0.08    unsupported
+//
+// Prices must come from the Gemini API page, not Vertex AI: Vertex keeps a
+// separate without-audio tier at roughly half price while the Gemini API has a
+// single audio-inclusive rate, so the two are not interchangeable. The previous
+// 4k fast multiplier (2.333) was computed from Vertex's $0.35/$0.15 and
+// undercharged by 22% against the $0.30/$0.10 we actually pay.
+var veoResolutionRatios = map[string]map[string]float64{
+	"standard": {"720p": 1.0, "1080p": 1.0, "4k": 1.5},
+	"fast":     {"720p": 1.0, "1080p": 1.2, "4k": 3.0},
+	// Lite has no 4k tier; a 4k request is rejected upstream before billing.
+	"lite": {"720p": 1.0, "1080p": 1.6},
+}
+
+// veoFamily classifies a Veo model name. Order matters: every name contains
+// "generate", and the lite/fast names are the more specific ones.
+func veoFamily(modelName string) string {
+	switch {
+	case strings.Contains(modelName, "lite"):
+		return "lite"
+	case strings.Contains(modelName, "fast"):
+		return "fast"
+	default:
+		return "standard"
+	}
+}
+
+// VeoResolutionRatio returns the pricing multiplier for the given resolution,
+// relative to the model's 720p rate.
+//
+// 1080p is a genuinely different price for the fast and lite families, so
+// treating it as 720p undercharges by 17% and 37% respectively. Only the
+// standard family prices 720p and 1080p the same.
 func VeoResolutionRatio(modelName, resolution string) float64 {
-	if resolution != "4k" {
+	// The tables describe Veo 3.1. Earlier generations are shut down upstream
+	// (2026-06-30), so anything else keeps the neutral multiplier.
+	if !strings.Contains(modelName, "3.1") {
 		return 1.0
 	}
-	// 4K multipliers derived from Vertex AI official pricing (video+audio base):
-	//   veo-3.1-generate:      $0.60 / $0.40 = 1.5
-	//   veo-3.1-fast-generate: $0.35 / $0.15 ≈ 2.333
-	// Veo 3.0 models do not support 4K; return 1.0 as fallback.
-	if strings.Contains(modelName, "3.1-fast-generate") {
-		return 2.333333
-	}
-	if strings.Contains(modelName, "3.1-generate") || strings.Contains(modelName, "3.1") {
-		return 1.5
+	if ratio, ok := veoResolutionRatios[veoFamily(modelName)][resolution]; ok {
+		return ratio
 	}
 	return 1.0
 }

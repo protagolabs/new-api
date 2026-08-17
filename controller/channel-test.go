@@ -111,6 +111,20 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 
+	// The test below always speaks chat/completions. For a video or image
+	// generation model that is the wrong verb entirely -- Gemini answers
+	// "models/veo-3.1-... is not supported for generateContent", a 404 that
+	// reads exactly like a dead channel and sent us chasing a healthy one.
+	//
+	// unsupportedTestChannelTypes above cannot cover this: channel type 24
+	// serves Gemini text models and Veo video models alike, so the exclusion
+	// has to be per model rather than per channel.
+	if isNonChatTestModel(testModel) {
+		return testResult{
+			localErr: fmt.Errorf("model %s is a generation model and cannot be tested over chat/completions; set a chat model as the channel's test model instead", testModel),
+		}
+	}
+
 	endpointType = normalizeChannelTestEndpoint(channel, testModel, endpointType)
 
 	requestPath := "/v1/chat/completions"
