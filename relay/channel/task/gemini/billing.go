@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
 // ParseVeoDurationSeconds extracts durationSeconds from metadata.
@@ -121,6 +122,10 @@ func SizeToVeoAspectRatio(size string) string {
 	return "16:9"
 }
 
+// veoBaseResolution is the tier ModelPrice itself is quoted at, so a missing
+// entry for it is not a pricing gap.
+const veoBaseResolution = "720p"
+
 // veoResolutionRatios maps a Veo 3.1 family to its per-resolution multiplier,
 // relative to that family's own 720p rate (which is what ModelPrice holds).
 //
@@ -163,14 +168,28 @@ func veoFamily(modelName string) string {
 // 1080p is a genuinely different price for the fast and lite families, so
 // treating it as 720p undercharges by 17% and 37% respectively. Only the
 // standard family prices 720p and 1080p the same.
+//
+// Resolution order: the video_tier_ratio option first, then the built-in table
+// above. Config first means a new Veo generation is a price-list edit rather
+// than a release; the built-in table means a fresh install still bills 3.1
+// correctly with nothing configured.
 func VeoResolutionRatio(modelName, resolution string) float64 {
-	// The tables describe Veo 3.1. Earlier generations are shut down upstream
-	// (2026-06-30), so anything else keeps the neutral multiplier.
-	if !strings.Contains(modelName, "3.1") {
-		return 1.0
-	}
-	if ratio, ok := veoResolutionRatios[veoFamily(modelName)][resolution]; ok {
+	if ratio, ok := ratio_setting.GetVideoTierRatio(modelName, resolution); ok {
 		return ratio
+	}
+	// The built-in table describes Veo 3.1 only. Earlier generations are shut
+	// down upstream (2026-06-30).
+	if strings.Contains(modelName, "3.1") {
+		if ratio, ok := veoResolutionRatios[veoFamily(modelName)][resolution]; ok {
+			return ratio
+		}
+	}
+	// Neither source priced this tier. 720p is the base rate ModelPrice already
+	// holds, so 1.0 is right there and not worth a warning; anything else means
+	// a surcharge we are about to miss -- say so rather than undercharge in
+	// silence, which is exactly how the 3.1 tiers went unnoticed.
+	if resolution != veoBaseResolution && strings.HasPrefix(modelName, "veo-") {
+		ratio_setting.WarnUnpricedVideoTier(modelName, resolution)
 	}
 	return 1.0
 }
