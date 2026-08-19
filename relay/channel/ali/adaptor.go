@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -103,6 +104,16 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		}
 	default:
 		switch info.RelayMode {
+		case constant.RelayModeRealtime:
+			// Alibaba's realtime endpoint differs from OpenAI's in two ways that
+			// both have to be handled here: the path is /api-ws/v1/realtime
+			// rather than /v1/realtime, and the model travels in the query
+			// string instead of the session payload. The models themselves
+			// refuse HTTP outright ("current user api does not support http
+			// call"), so this is the only way to reach them.
+			fullRequestURL = fmt.Sprintf("%s/api-ws/v1/realtime?model=%s",
+				toWebsocketScheme(info.ChannelBaseUrl),
+				url.QueryEscape(info.UpstreamModelName))
 		case constant.RelayModeEmbeddings:
 			fullRequestURL = fmt.Sprintf("%s/compatible-mode/v1/embeddings", info.ChannelBaseUrl)
 		case constant.RelayModeRerank:
@@ -135,8 +146,13 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, req)
+	// Alibaba authenticates the realtime socket with a plain Authorization
+	// header, unlike OpenAI which smuggles the key through
+	// Sec-WebSocket-Protocol. The line below already does the right thing for
+	// both, so realtime needs nothing extra here.
 	req.Set("Authorization", "Bearer "+info.ApiKey)
-	if info.IsStream {
+	if info.IsStream && info.RelayMode != constant.RelayModeRealtime {
+		// SSE has no meaning on a WebSocket, and realtime sets IsStream.
 		req.Set("X-DashScope-SSE", "enable")
 	}
 	if c.GetString("plugin") != "" {
@@ -239,6 +255,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	if info.RelayMode == constant.RelayModeRealtime {
+		return channel.DoWssRequest(a, c, info, requestBody)
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
 }
 
