@@ -163,7 +163,11 @@ func TestDreaminaHonoursSizeField(t *testing.T) {
 			Metadata: map[string]any{"resolution": "4k"},
 		}, Dreamina4K},
 		{"neither", relaycommon.TaskSubmitReq{}, ""},
-		{"unrecognised", relaycommon.TaskSubmitReq{Size: "1920x1080"}, ""},
+		// Pixel dimensions used to be dropped, which let the vendor fall back
+		// to 720p and bill for it; they now map onto a tier. See
+		// size_parsing_test.go for the full matrix.
+		{"pixels", relaycommon.TaskSubmitReq{Size: "1920x1080"}, Dreamina1080P},
+		{"unrecognised", relaycommon.TaskSubmitReq{Size: "not-a-size"}, ""},
 	} {
 		if got := dreaminaRequestedResolution(&tc.req); got != tc.wantRes {
 			t.Errorf("%s: resolved %q, want %q", tc.name, got, tc.wantRes)

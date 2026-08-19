@@ -86,7 +86,23 @@ func ResolveVeoResolution(metadata map[string]any, stdSize string) string {
 
 // SizeToVeoResolution converts a "WxH" size string to a Veo resolution label.
 func SizeToVeoResolution(size string) string {
-	parts := strings.SplitN(strings.ToLower(size), "x", 2)
+	s := strings.ToLower(strings.TrimSpace(size))
+
+	// Tier labels first. Our published docs tell callers to send exactly these
+	// ("720p" / "1080p" / "4k"), but only the WxH form used to parse: a label
+	// has no "x" to split on, so it fell through to the 720p default and the
+	// caller silently got a lower resolution than they asked for -- with a
+	// self-consistent bill, since pricing reads the same value.
+	switch s {
+	case "720p", "720", "hd":
+		return "720p"
+	case "1080p", "1080", "fhd":
+		return "1080p"
+	case "4k", "2160p", "2160", "uhd":
+		return "4k"
+	}
+
+	parts := strings.SplitN(s, "x", 2)
 	if len(parts) != 2 {
 		return "720p"
 	}

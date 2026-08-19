@@ -1,6 +1,7 @@
 package doubao
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -127,7 +128,42 @@ func NormalizeDreaminaResolution(v string) string {
 	case "4k", "2160p", "2160", "uhd":
 		return Dreamina4K
 	}
-	return ""
+	// Pixel dimensions, e.g. "854x480". The vendor itself only accepts tier
+	// names, but callers coming from the OpenAI image API — or from HappyHorse
+	// and MiniMax on this same gateway, which both take WxH — reasonably expect
+	// this to work. Left unparsed it becomes an empty resolution, the vendor
+	// renders its 720p default, and the caller is billed for a tier they did
+	// not ask for.
+	return dreaminaResolutionFromPixels(s)
+}
+
+// dreaminaResolutionFromPixels maps a "WxH" string onto the nearest tier at or
+// below the requested size, so a request is never silently upgraded into a more
+// expensive tier.
+func dreaminaResolutionFromPixels(s string) string {
+	parts := strings.SplitN(s, "x", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	w, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
+	h, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errW != nil || errH != nil || w <= 0 || h <= 0 {
+		return ""
+	}
+	maxDim := w
+	if h > maxDim {
+		maxDim = h
+	}
+	switch {
+	case maxDim >= 3840:
+		return Dreamina4K
+	case maxDim >= 1920:
+		return Dreamina1080P
+	case maxDim >= 1280:
+		return Dreamina720P
+	default:
+		return Dreamina480P
+	}
 }
 
 // dreaminaTierRatio picks the per-token multiplier for a model's resolution
