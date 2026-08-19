@@ -360,7 +360,13 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			modelRequest.Model = modelName
 		}
 		c.Set("relay_mode", relayMode)
-	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") && !strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+	} else if !strings.HasPrefix(c.Request.URL.Path, "/v1/audio/transcriptions") &&
+		!strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") &&
+		!strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+		// Realtime is excluded here because it is a GET carrying no body: the
+		// parse below fails and returns 400 before the query-string branch that
+		// follows ever runs, which made every realtime model unreachable no
+		// matter which channel served it.
 		req, err := getModelFromRequest(c)
 		if err != nil {
 			return nil, false, err
