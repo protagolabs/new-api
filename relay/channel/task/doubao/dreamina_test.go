@@ -310,11 +310,13 @@ func TestDreamina25HasNoResolutionTier(t *testing.T) {
 // 2.5 does not offer 1080p/4K. A caller who asks anyway must not get another
 // family's tier -- the family's base rate is the safe answer, and upstream
 // rejects the request regardless.
+// 2.5 has no 4K tier, so 4K must fall back to the base rate rather than borrow
+// 2.0's much cheaper 4K figure. 1080p used to belong here too, but the model
+// gained 1080p support and it is now a priced tier of its own -- see
+// TestDreamina25HasA1080pTier.
 func TestDreamina25UnsupportedTiersFallBackToBase(t *testing.T) {
-	for _, res := range []string{Dreamina1080P, Dreamina4K} {
-		if got := dreaminaTierRatio(dreaminaModel25, res, false); got != 1.0 {
-			t.Errorf("2.5 %s should fall back to the base rate, got %v", res, got)
-		}
+	if got := dreaminaTierRatio(dreaminaModel25, Dreamina4K, false); got != 1.0 {
+		t.Errorf("2.5 4K should fall back to the base rate, got %v", got)
 	}
 }
 

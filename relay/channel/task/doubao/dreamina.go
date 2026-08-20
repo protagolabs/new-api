@@ -81,13 +81,25 @@ var dreaminaPricingByFamily = map[string]dreaminaPricing{
 	// Input video may run to 30s here (2.0 caps at 15s), and a minimum token
 	// charge applies with video input -- both already reflected in the vendor's
 	// completion_tokens, so neither needs handling on our side.
+	// Seedance 2.5: 480p and 720p share one rate; 1080p is a separate, dearer
+	// tier added when the model gained 1080p support (10-bit, H.265/HEVC).
+	// no video: $10.70 (480p/720p) / $11.70 (1080p)
+	// video in: $6.40 (480p/720p) / $7.00 (1080p)
+	// There is no 4K tier for this family.
+	//
+	// The list rates are used deliberately: BytePlus is discounting 1080p to 72%
+	// until 2026-09-17, but that discount is our purchasing margin, not a price
+	// cut to pass on — and pricing at list means nothing has to change when it
+	// lapses.
 	"dreamina-seedance-2-5": {
 		base: 10.70,
 		resolution: map[string]float64{
 			Dreamina480P: 1.0, Dreamina720P: 1.0,
+			Dreamina1080P: 11.70 / 10.70,
 		},
 		videoInput: map[string]float64{
 			Dreamina480P: 6.40 / 10.70, Dreamina720P: 6.40 / 10.70,
+			Dreamina1080P: 7.00 / 10.70,
 		},
 	},
 }
