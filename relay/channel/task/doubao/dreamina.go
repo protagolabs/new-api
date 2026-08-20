@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
 // Dreamina Seedance 2.0 is priced per output token, per resolution tier -- the
@@ -76,21 +77,20 @@ var dreaminaPricingByFamily = map[string]dreaminaPricing{
 			Dreamina1080P: 4.7 / 7.0, Dreamina4K: 2.4 / 7.0,
 		},
 	},
-	// Seedance 2.5: only 480p/720p exist, and both bill at the same rate, so the
-	// only tier axis is video input. no video $10.70 / video in $6.40.
-	// Input video may run to 30s here (2.0 caps at 15s), and a minimum token
-	// charge applies with video input -- both already reflected in the vendor's
-	// completion_tokens, so neither needs handling on our side.
 	// Seedance 2.5: 480p and 720p share one rate; 1080p is a separate, dearer
-	// tier added when the model gained 1080p support (10-bit, H.265/HEVC).
+	// tier, added when the model gained 1080p support (10-bit, H.265/HEVC).
 	// no video: $10.70 (480p/720p) / $11.70 (1080p)
 	// video in: $6.40 (480p/720p) / $7.00 (1080p)
 	// There is no 4K tier for this family.
 	//
 	// The list rates are used deliberately: BytePlus is discounting 1080p to 72%
 	// until 2026-09-17, but that discount is our purchasing margin, not a price
-	// cut to pass on — and pricing at list means nothing has to change when it
+	// cut to pass on -- and pricing at list means nothing has to change when it
 	// lapses.
+	//
+	// Input video may run to 30s here (2.0 caps at 15s), and a minimum token
+	// charge applies with video input -- both already reflected in the vendor's
+	// completion_tokens, so neither needs handling on our side.
 	"dreamina-seedance-2-5": {
 		base: 10.70,
 		resolution: map[string]float64{
@@ -303,6 +303,19 @@ func DreaminaSettleQuota(task *model.Task, taskResult *relaycommon.TaskInfo) int
 	groupRatio := bc.GroupRatio
 	if groupRatio <= 0 {
 		groupRatio = 1
+	}
+	// A discount may be scoped to one resolution rather than the whole model --
+	// vendors sometimes promote a single tier, and passing that on wholesale
+	// would give away the tiers they never discounted.
+	//
+	// It has to be resolved here rather than at submit time, because only now
+	// do we know which tier was actually delivered: the vendor ignores the
+	// requested resolution often enough that pricing a 1080p discount against
+	// the request would apply it to 720p videos.
+	if r, ok := ratio_setting.GetModelTierRatioForUser(
+		task.UserId, task.Group, modelName, resp.Resolution,
+	); ok && r > 0 {
+		groupRatio = r
 	}
 
 	// ModelRatio is quota per token, so the result is already in quota -- no

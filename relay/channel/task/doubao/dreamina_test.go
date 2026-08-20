@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
 const dreaminaModel = "dreamina-seedance-2-0-260128"
@@ -470,4 +471,74 @@ func TestDreaminaOmniReferenceTaskTypePassesThrough(t *testing.T) {
 	if out2.OmniReferenceTaskType != "" {
 		t.Errorf("unset field leaked as %q", out2.OmniReferenceTaskType)
 	}
+}
+
+// A discount scoped to one resolution must apply to that resolution and leave
+// the others at full price. The vendor discounted only 1080p, so passing it on
+// wholesale would give away the tiers they never discounted.
+func TestSettleAppliesTierScopedDiscount(t *testing.T) {
+	ratio_setting.SetGroupModelRatioForTest(map[string]map[string]float64{
+		"user:530": {"dreamina-seedance-2-5*@1080p": 0.85},
+	})
+	defer ratio_setting.SetGroupModelRatioForTest(nil)
+
+	const tokens = 100000
+
+	// 1080p: base x 1080p tier (11.70/10.70) x 0.85 discount.
+	got1080 := DreaminaSettleQuota(userTask25(t, 530, "default", Dreamina1080P, tokens))
+	want1080 := float64(tokens) * 5.35 * (11.70 / 10.70) * 0.85
+	if diff := float64(got1080) - want1080; diff > 1 || diff < -1 {
+		t.Errorf("1080p = %d, want ~%.0f (tier discount applied)", got1080, want1080)
+	}
+
+	// 720p: no discount at all.
+	got720 := DreaminaSettleQuota(userTask25(t, 530, "default", Dreamina720P, tokens))
+	want720 := float64(tokens) * 5.35 * 1.0
+	if diff := float64(got720) - want720; diff > 1 || diff < -1 {
+		t.Errorf("720p = %d, want ~%.0f (must stay undiscounted)", got720, want720)
+	}
+}
+
+// The tier is taken from what the vendor delivered, not what was requested --
+// the vendor ignores the requested resolution often enough that pricing against
+// the request would hand out a 1080p discount on a 720p video.
+func TestSettleTierDiscountFollowsDeliveredResolution(t *testing.T) {
+	ratio_setting.SetGroupModelRatioForTest(map[string]map[string]float64{
+		"user:530": {"dreamina-seedance-2-5*@1080p": 0.85},
+	})
+	defer ratio_setting.SetGroupModelRatioForTest(nil)
+
+	const tokens = 100000
+	// Response says 720p, so no discount regardless of what was asked for.
+	got := DreaminaSettleQuota(userTask25(t, 530, "default", Dreamina720P, tokens))
+	want := float64(tokens) * 5.35
+	if diff := float64(got) - want; diff > 1 || diff < -1 {
+		t.Errorf("delivered 720p = %d, want ~%.0f (undiscounted)", got, want)
+	}
+}
+
+// Another user must pay full price.
+func TestSettleTierDiscountIsUserScoped(t *testing.T) {
+	ratio_setting.SetGroupModelRatioForTest(map[string]map[string]float64{
+		"user:530": {"dreamina-seedance-2-5*@1080p": 0.85},
+	})
+	defer ratio_setting.SetGroupModelRatioForTest(nil)
+
+	const tokens = 100000
+	got := DreaminaSettleQuota(userTask25(t, 999, "default", Dreamina1080P, tokens))
+	want := float64(tokens) * 5.35 * (11.70 / 10.70)
+	if diff := float64(got) - want; diff > 1 || diff < -1 {
+		t.Errorf("other user = %d, want ~%.0f (full price)", got, want)
+	}
+}
+
+// userTask25 is dreamina25Task with an owner, so tier-scoped discounts (which
+// are looked up per user) can be exercised.
+func userTask25(t *testing.T, userID int, group, resolution string, tokens int) (*model.Task, *relaycommon.TaskInfo) {
+	t.Helper()
+	task, info := dreamina25Task(t, resolution, tokens,
+		&model.TaskBillingContext{ModelRatio: testModelRatio25, GroupRatio: 1})
+	task.UserId = userID
+	task.Group = group
+	return task, info
 }

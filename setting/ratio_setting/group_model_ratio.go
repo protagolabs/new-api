@@ -132,3 +132,92 @@ func ContainsGroupModelRules(group string) bool {
 	rules, ok := groupModelRatioMap.Get(group)
 	return ok && len(rules) > 0
 }
+
+// TierSeparator marks a rule that applies only to one output tier of a model,
+// e.g. "dreamina-seedance-2-5-260628@1080p".
+//
+// Some vendors discount a single resolution rather than the whole model, and a
+// discount passed on wholesale would give away the tiers they never discounted.
+// A model name alone cannot express that: every tier of a video model shares
+// one name.
+const TierSeparator = "@"
+
+// GetModelTierRatioForUser resolves the discount for a request, preferring a
+// rule written for the specific output tier over one written for the model.
+//
+// The tier must be the one actually delivered, not the one requested: video
+// vendors routinely ignore the requested resolution and render their default,
+// so pricing against the request would apply a 1080p discount to a 720p video.
+// That means this can only be called at settlement, after the vendor has said
+// what it produced.
+//
+// Returns false when no rule matches, in which case the caller keeps whatever
+// group ratio it already had — a missing rule is not a discount.
+func GetModelTierRatioForUser(userID int, group, modelName, tier string) (float64, bool) {
+	if tier != "" {
+		if r, ok := lookupTierRule(UserRuleKey(userID), modelName, tier); ok {
+			return r, true
+		}
+		if r, ok := lookupTierRule(group, modelName, tier); ok {
+			return r, true
+		}
+	}
+	return GetModelRatioForUser(userID, group, modelName)
+}
+
+// lookupTierRule matches only rules that name a tier explicitly.
+//
+// Restricting it this way is what keeps the two rule kinds apart. A model-level
+// pattern like "dreamina-seedance-2-5*" is also a prefix of
+// "dreamina-seedance-2-5-260628@1080p", so a naive prefix match would let it
+// answer tier queries and the distinction would collapse.
+func lookupTierRule(scope, modelName, tier string) (float64, bool) {
+	if scope == "" || modelName == "" {
+		return 0, false
+	}
+	rules, ok := groupModelRatioMap.Get(scope)
+	if !ok || len(rules) == 0 {
+		return 0, false
+	}
+
+	if r, ok := rules[modelName+TierSeparator+tier]; ok {
+		return r, true
+	}
+
+	// Longest matching prefix among patterns of the form "prefix*@tier".
+	suffix := "*" + TierSeparator + tier
+	best, bestLen, found := 0.0, -1, false
+	for pattern, r := range rules {
+		if !strings.HasSuffix(pattern, suffix) {
+			continue
+		}
+		prefix := strings.TrimSuffix(pattern, suffix)
+		if strings.HasPrefix(modelName, prefix) && len(prefix) > bestLen {
+			best, bestLen, found = r, len(prefix), true
+		}
+	}
+	return best, found
+}
+
+// TierScopedRules returns every rule key that names a tier, so callers can warn
+// about ones written for models that will never consult them.
+func TierScopedRules() map[string][]string {
+	out := make(map[string][]string)
+	for scope, rules := range groupModelRatioMap.ReadAll() {
+		for pattern := range rules {
+			if strings.Contains(pattern, TierSeparator) {
+				out[scope] = append(out[scope], pattern)
+			}
+		}
+	}
+	return out
+}
+
+// SetGroupModelRatioForTest replaces the rule table wholesale. Test-only: the
+// production path loads this from the options table.
+func SetGroupModelRatioForTest(rules map[string]map[string]float64) {
+	groupModelRatioMap.Clear()
+	for scope, r := range rules {
+		groupModelRatioMap.Set(scope, r)
+	}
+}
