@@ -170,3 +170,120 @@ func TestConvertToAliRequestWan25I2VKeepsLegacyImgURL(t *testing.T) {
 	require.Contains(t, string(body), `"img_url"`)
 	require.NotContains(t, string(body), `"media"`)
 }
+
+// HappyHorse takes its images through input.media exactly like wan2.7 does, but
+// the mapping used to be gated on the wan2.7 model prefix. Every image-to-video
+// request therefore went out with input.img_url and came back as
+// `InvalidParameter: Field required: input.media` -- including the request in
+// our own published docs.
+func TestConvertToAliRequestHappyHorseI2VBuildsMediaFromImage(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:    "happyhorse-1.1-i2v",
+		Prompt:   "camera slowly pushing in",
+		Image:    "https://example.com/first.png",
+		Size:     "480P",
+		Duration: 3,
+	}
+
+	aliReq, err := adaptor.convertToAliRequest(testRelayInfo(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, []AliVideoMedia{
+		{Type: "first_frame", URL: "https://example.com/first.png"},
+	}, aliReq.Input.Media)
+	require.Empty(t, aliReq.Input.ImgURL)
+
+	body, err := common.Marshal(aliReq)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"media"`)
+	require.NotContains(t, string(body), `"img_url"`)
+}
+
+// The plural field must work too -- it is what the OpenAI-shaped clients send.
+func TestConvertToAliRequestHappyHorseI2VAcceptsImagesArray(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:  "happyhorse-1.1-r2v",
+		Prompt: "bring it to life",
+		Images: []string{"https://example.com/a.png", "https://example.com/b.png"},
+	}
+
+	aliReq, err := adaptor.convertToAliRequest(testRelayInfo(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, []AliVideoMedia{
+		{Type: "first_frame", URL: "https://example.com/a.png"},
+		{Type: "last_frame", URL: "https://example.com/b.png"},
+	}, aliReq.Input.Media)
+}
+
+// This is the regression that matters: HappyHorse shares the adaptor with its
+// text-to-video models, where having no image is the normal case. 250 t2v tasks
+// have succeeded in production and must not start erroring out.
+func TestConvertToAliRequestHappyHorseT2VNeedsNoMedia(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:    "happyhorse-1.1-t2v",
+		Prompt:   "a young horse galloping across a sunlit prairie",
+		Size:     "720P",
+		Duration: 5,
+	}
+
+	aliReq, err := adaptor.convertToAliRequest(testRelayInfo(), req)
+
+	require.NoError(t, err)
+	require.Empty(t, aliReq.Input.Media)
+	require.Equal(t, "720P", aliReq.Parameters.Resolution)
+
+	body, err := common.Marshal(aliReq)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), `"media"`)
+}
+
+// Audio is only known to ride input.media on wan2.7. For HappyHorse it is
+// untested, so a caller-supplied audio_url must be left where they put it
+// rather than moved into media on a guess.
+func TestConvertToAliRequestHappyHorseLeavesAudioURLAlone(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:  "happyhorse-1.1-i2v",
+		Prompt: "sing along",
+		Image:  "https://example.com/first.png",
+		Metadata: map[string]any{
+			"input": map[string]any{"audio_url": "https://example.com/voice.mp3"},
+		},
+	}
+
+	aliReq, err := adaptor.convertToAliRequest(testRelayInfo(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, "https://example.com/voice.mp3", aliReq.Input.AudioURL)
+	require.Equal(t, []AliVideoMedia{
+		{Type: "first_frame", URL: "https://example.com/first.png"},
+	}, aliReq.Input.Media)
+}
+
+// Hand-built media (the only way i2v worked before this fix) must still pass
+// through untouched, so existing callers do not break.
+func TestConvertToAliRequestHappyHorseKeepsExplicitMetadataMedia(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:  "happyhorse-1.1-i2v",
+		Prompt: "camera slowly pushing in",
+		Metadata: map[string]any{
+			"input": map[string]any{
+				"media": []any{
+					map[string]any{"type": "first_frame", "url": "https://example.com/explicit.png"},
+				},
+			},
+		},
+	}
+
+	aliReq, err := adaptor.convertToAliRequest(testRelayInfo(), req)
+
+	require.NoError(t, err)
+	require.Equal(t, []AliVideoMedia{
+		{Type: "first_frame", URL: "https://example.com/explicit.png"},
+	}, aliReq.Input.Media)
+}

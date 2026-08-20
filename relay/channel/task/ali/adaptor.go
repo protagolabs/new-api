@@ -281,6 +281,18 @@ func isWan27I2VModel(model string) bool {
 	return strings.HasPrefix(model, "wan2.7-i2v")
 }
 
+// usesMediaProtocol reports whether the model takes its image inputs through the
+// input.media array rather than the legacy flat img_url / first_frame_url fields.
+//
+// HappyHorse belongs here too, which is why image-to-video on it was broken: the
+// mapping below only ran for wan2.7-i2v, so `image` / `images` landed in
+// input.img_url and the vendor answered `InvalidParameter: Field required:
+// input.media` for every request. Confirmed against the live API -- the same
+// request with a hand-built input.media succeeds.
+func usesMediaProtocol(model string) bool {
+	return isWan27I2VModel(model) || IsHappyHorse(model)
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		trimmed := strings.TrimSpace(value)
@@ -321,10 +333,11 @@ func secondTaskImage(req relaycommon.TaskSubmitReq) string {
 	return ""
 }
 
-func normalizeWan27I2VInput(aliReq *AliVideoRequest, req relaycommon.TaskSubmitReq) error {
-	if !isWan27I2VModel(aliReq.Model) {
+func normalizeMediaProtocolInput(aliReq *AliVideoRequest, req relaycommon.TaskSubmitReq) error {
+	if !usesMediaProtocol(aliReq.Model) {
 		return nil
 	}
+	wan27 := isWan27I2VModel(aliReq.Model)
 
 	if len(aliReq.Input.Media) == 0 {
 		firstFrameURL := firstNonEmpty(aliReq.Input.FirstFrameURL, aliReq.Input.ImgURL, firstTaskImage(req))
@@ -343,7 +356,10 @@ func normalizeWan27I2VInput(aliReq *AliVideoRequest, req relaycommon.TaskSubmitR
 				URL:  lastFrameURL,
 			})
 		}
-		if audioURL != "" {
+		// Audio is only known to ride input.media on wan2.7. Whether HappyHorse
+		// takes a driving_audio entry or the flat input.audio_url is untested, so
+		// leave its audio field exactly where the caller put it.
+		if audioURL != "" && wan27 {
 			aliReq.Input.Media = append(aliReq.Input.Media, AliVideoMedia{
 				Type: "driving_audio",
 				URL:  audioURL,
@@ -352,15 +368,24 @@ func normalizeWan27I2VInput(aliReq *AliVideoRequest, req relaycommon.TaskSubmitR
 	}
 
 	if len(aliReq.Input.Media) == 0 {
-		return fmt.Errorf("wan2.7-i2v requires image, images, input_reference, or input.media")
+		// wan2.7-i2v is image-to-video by definition, so no image is a caller
+		// error. HappyHorse shares this adaptor with its text-to-video models,
+		// where no image is the normal case -- 250 successful t2v tasks in
+		// production must keep working.
+		if wan27 {
+			return fmt.Errorf("wan2.7-i2v requires image, images, input_reference, or input.media")
+		}
+		return nil
 	}
 
-	// Wan2.7 image-to-video uses the new input.media protocol. Avoid sending
-	// legacy fields that belong to wan2.6 and earlier image-to-video APIs.
+	// These models take images through input.media; the flat fields belong to
+	// wan2.6-era image-to-video and sending both is rejected upstream.
 	aliReq.Input.ImgURL = ""
 	aliReq.Input.FirstFrameURL = ""
 	aliReq.Input.LastFrameURL = ""
-	aliReq.Input.AudioURL = ""
+	if wan27 {
+		aliReq.Input.AudioURL = ""
+	}
 	return nil
 }
 
@@ -457,7 +482,7 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 		return nil, errors.New("can't change model with metadata")
 	}
 
-	if err := normalizeWan27I2VInput(aliReq, req); err != nil {
+	if err := normalizeMediaProtocolInput(aliReq, req); err != nil {
 		return nil, err
 	}
 
