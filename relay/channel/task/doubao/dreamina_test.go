@@ -1,11 +1,13 @@
 package doubao
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
@@ -541,4 +543,76 @@ func userTask25(t *testing.T, userID int, group, resolution string, tokens int) 
 	task.UserId = userID
 	task.Group = group
 	return task, info
+}
+
+// The OpenAI-shaped endpoint must carry the billing inputs too. It used to drop
+// them: /v1/video/generations/{id} passes the raw upstream body through, but
+// /v1/videos/{id} goes through this converter, which mapped only status/url/error
+// -- so a client on the OpenAI-compatible path was billed per token and shown
+// none. Payload below is a real 1080p/4s response.
+func TestConvertToOpenAIVideoCarriesBillingInputs(t *testing.T) {
+	const upstream = `{
+		"id": "cgt-x",
+		"model": "dreamina-seedance-2-5-260628",
+		"status": "succeeded",
+		"resolution": "1080p",
+		"duration": 4,
+		"framespersecond": 24,
+		"ratio": "16:9",
+		"content": {"video_url": "https://example.invalid/v.mp4"},
+		"usage": {"completion_tokens": 196425, "total_tokens": 196425}
+	}`
+	task := &model.Task{
+		TaskID:   "task_x",
+		Status:   model.TaskStatusSuccess,
+		Progress: "100%",
+		Data:     []byte(upstream),
+	}
+	task.Properties.OriginModelName = "dreamina-seedance-2-5-260628"
+
+	raw, err := (&TaskAdaptor{}).ConvertToOpenAIVideo(task)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	var got dto.OpenAIVideo
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.Usage == nil {
+		t.Fatal("usage missing — the client cannot reconcile a per-token charge without it")
+	}
+	if got.Usage.CompletionTokens != 196425 || got.Usage.TotalTokens != 196425 {
+		t.Errorf("usage = %+v, want 196425/196425", *got.Usage)
+	}
+	if got.Seconds != "4" {
+		t.Errorf("seconds = %q, want \"4\"", got.Seconds)
+	}
+	// The delivered tier, not the requested one: settlement prices against this.
+	if got.Metadata["resolution"] != "1080p" {
+		t.Errorf("metadata.resolution = %v, want 1080p", got.Metadata["resolution"])
+	}
+	if got.Metadata["url"] != "https://example.invalid/v.mp4" {
+		t.Errorf("metadata.url = %v, want the video URL", got.Metadata["url"])
+	}
+}
+
+// Per-second and per-call models report no tokens; emitting a zeroed usage block
+// would read as "this cost 0 tokens" rather than "tokens do not apply here".
+func TestConvertToOpenAIVideoOmitsEmptyUsage(t *testing.T) {
+	task := &model.Task{
+		TaskID: "task_y",
+		Status: model.TaskStatusSuccess,
+		Data:   []byte(`{"status":"succeeded","content":{"video_url":"u"}}`),
+	}
+	raw, err := (&TaskAdaptor{}).ConvertToOpenAIVideo(task)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if bytes.Contains(raw, []byte(`"usage"`)) {
+		t.Errorf("usage present with no tokens: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"seconds"`)) {
+		t.Errorf("seconds present with no duration: %s", raw)
+	}
 }

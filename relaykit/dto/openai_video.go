@@ -27,7 +27,18 @@ type OpenAIVideo struct {
 	Size               string            `json:"size,omitempty"`
 	RemixedFromVideoID string            `json:"remixed_from_video_id,omitempty"`
 	Error              *OpenAIVideoError `json:"error,omitempty"`
+	Usage              *OpenAIVideoUsage `json:"usage,omitempty"`
 	Metadata           map[string]any    `json:"metadata,omitempty"`
+}
+
+// OpenAIVideoUsage reports what the vendor actually billed, for the models whose
+// price is a function of it. Seedance is charged per output token at a rate that
+// is not proportional to duration (720p is 87.3K tokens at 4s but 108.9K at 5s),
+// so without this a client on the OpenAI-shaped endpoint has no way to check its
+// own invoice. Omitted entirely for per-second and per-call models.
+type OpenAIVideoUsage struct {
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
 }
 
 func (m *OpenAIVideo) SetProgressStr(progress string) {

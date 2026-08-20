@@ -406,6 +406,25 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 	openAIVideo.CompletedAt = originTask.UpdatedAt
 	openAIVideo.Model = originTask.Properties.OriginModelName
 
+	// Surface what the charge was computed from. Seedance bills per output token
+	// and this vendor renders its own resolution when it dislikes the requested
+	// one -- both are settled from the response, so a client that only sees the
+	// OpenAI-shaped payload cannot reconcile its bill without them.
+	if u := dResp.Usage; u.CompletionTokens > 0 || u.TotalTokens > 0 {
+		openAIVideo.Usage = &dto.OpenAIVideoUsage{
+			CompletionTokens: u.CompletionTokens,
+			TotalTokens:      u.TotalTokens,
+		}
+	}
+	if dResp.Duration > 0 {
+		openAIVideo.Seconds = strconv.Itoa(dResp.Duration)
+	}
+	if dResp.Resolution != "" {
+		// A tier label ("1080p"), not WxH: with ratio=adaptive the vendor picks
+		// the frame size itself and only reports the tier.
+		openAIVideo.SetMetadata("resolution", dResp.Resolution)
+	}
+
 	if dResp.Status == "failed" {
 		openAIVideo.Error = &dto.OpenAIVideoError{
 			Message: dResp.Error.Message,
