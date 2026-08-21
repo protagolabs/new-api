@@ -18,6 +18,7 @@ import (
 	taskcommon "github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
@@ -143,7 +144,48 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if size == "1792x1024" || size == "1024x1792" {
 		ratios["size"] = 1.666667
 	}
+
+	// Not every model reached through this adaptor is Sora. Nested sub-sites
+	// expose grok video here too, and xAI prices per second by resolution tier
+	// (480p / 720p / 1080p) rather than by Sora's two frame sizes -- so a 720p
+	// request was billed at the 480p rate, 43% under the vendor's list price.
+	//
+	// The configured tier table decides: a model listed there gets its tier
+	// multiplier, and one that is absent -- Sora itself -- keeps the mapping
+	// above untouched. Same mechanism the other video families already use, so
+	// a new tier is a config change rather than a release.
+	if tier := videoTierFromSize(size); tier != "" {
+		if tierRatio, ok := ratio_setting.GetVideoTierRatio(info.OriginModelName, tier); ok {
+			ratios["size"] = tierRatio
+		}
+	}
 	return ratios
+}
+
+// videoTierFromSize maps a "WxH" size onto the tier labels used by the
+// video_tier_ratio configuration. Judged on the longer edge so portrait and
+// landscape of the same tier price alike, which is how xAI bills them.
+func videoTierFromSize(size string) string {
+	width, height, ok := strings.Cut(strings.ToLower(size), "x")
+	if !ok {
+		return ""
+	}
+	w, _ := strconv.Atoi(width)
+	h, _ := strconv.Atoi(height)
+	longEdge := w
+	if h > longEdge {
+		longEdge = h
+	}
+	switch {
+	case longEdge >= 1920:
+		return "1080p"
+	case longEdge >= 1280:
+		return "720p"
+	case longEdge > 0:
+		return "480p"
+	default:
+		return ""
+	}
 }
 
 func (a *TaskAdaptor) BuildRequestURL(info *relaycommon.RelayInfo) (string, error) {
