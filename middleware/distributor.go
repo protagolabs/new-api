@@ -84,6 +84,22 @@ func Distribute() func(c *gin.Context) {
 				}
 				var selectGroup string
 				usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+
+				// A rerank request naming a model that does not serve that endpoint
+				// used to be forwarded anyway: channel selection matches on model
+				// and group only, so it picked a chat channel, which then held the
+				// request until the upstream gave up -- measured at 125s, answered
+				// 524. A client with a shorter timeout just sees a hang. The
+				// catalogue already records which endpoints each model serves, so
+				// refuse here, in the same 404 shape used for a model nobody serves.
+				if isRerankPath(c.Request.URL.Path) &&
+					!modelServesEndpoint(modelRequest.Model, constant.EndpointTypeJinaRerank) {
+					message := fmt.Sprintf("model %s does not support rerank", modelRequest.Model)
+					recordDistributorRejection(c, modelRequest.Model, usingGroup, message)
+					abortWithOpenAiMessage(c, http.StatusNotFound, message, types.ErrorCodeModelNotFound)
+					return
+				}
+
 				// check path is /pg/chat/completions
 				if strings.HasPrefix(c.Request.URL.Path, "/pg/chat/completions") {
 					playgroundRequest := &dto.PlayGroundRequest{}

@@ -3,6 +3,7 @@ package middleware
 import (
 	"strings"
 
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
@@ -120,4 +121,29 @@ func min3(a, b, c int) int {
 		a = c
 	}
 	return a
+}
+
+// isRerankPath matches the rerank endpoint this deployment exposes.
+func isRerankPath(path string) bool {
+	return strings.HasSuffix(strings.TrimSuffix(path, "/"), "/rerank")
+}
+
+// modelServesEndpoint reports whether the model catalogue lists this endpoint
+// for the model.
+//
+// A model with no catalogue entry yields no endpoints, and those fall through to
+// the normal channel lookup on purpose: that path answers with the
+// 404-plus-spelling-suggestion, which is more useful to a caller who mistyped a
+// name than a generic "endpoint not supported".
+func modelServesEndpoint(modelName string, want constant.EndpointType) bool {
+	endpoints := model.GetModelSupportEndpointTypes(modelName)
+	if len(endpoints) == 0 {
+		return true
+	}
+	for _, endpoint := range endpoints {
+		if endpoint == want {
+			return true
+		}
+	}
+	return false
 }
