@@ -142,6 +142,19 @@ func ResolveOriginTask(c *gin.Context, info *relaycommon.RelayInfo) *dto.TaskErr
 // 估算计费(EstimateBilling) → 计算价格 → 预扣费（仅首次）→
 // 构建/发送/解析上游请求 → 提交后计费调整(AdjustBillingOnSubmit)。
 // 控制器负责 defer Refund 和成功后 Settle。
+// submissionAccepted reports whether an upstream's response to a task submission
+// means the job was taken.
+//
+// Any 2xx counts. Requiring exactly 200 rejected 202 Accepted -- the standard
+// answer for an asynchronous job, and what some providers return here -- and the
+// resulting failure is the expensive kind: we hand the caller an error and store
+// no task, while the upstream has already started generating and will bill for
+// it. The job is then unreachable in both directions: no row to poll, and no id
+// to claim a refund against.
+func submissionAccepted(statusCode int) bool {
+	return statusCode >= 200 && statusCode < 300
+}
+
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
 	info.InitChannelMeta(c)
 
@@ -221,7 +234,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError)
 	}
-	if resp != nil && resp.StatusCode != http.StatusOK {
+	if resp != nil && !submissionAccepted(resp.StatusCode) {
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
