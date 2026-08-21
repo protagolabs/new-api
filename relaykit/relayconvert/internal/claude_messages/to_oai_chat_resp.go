@@ -190,18 +190,26 @@ func UsageFromClaudeUsage(usage *dto.Usage) *dto.Usage {
 	return &mapped
 }
 
+// cacheCreationTokensForOpenAIUsage picks the cache-write count that gets billed.
+//
+// Anthropic reports this twice: a total, and a per-TTL breakdown that must sum to
+// it. The total is authoritative; the buckets are its breakdown. They can still
+// disagree, because an upstream may prepend its own system prompt and count it in
+// the buckets without updating the total -- observed on one route as a fixed
+// 1000-token gap on ~13% of cache writes. Preferring the buckets there charges
+// the caller for a prefix they never sent, and the response they receive shows
+// the smaller total, so the invoice contradicts the usage block.
+//
+// So the total wins whenever the upstream reported one. The buckets are only a
+// fallback for responses that carry no total at all.
 func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
 	if usage == nil {
 		return 0
 	}
-	splitCacheCreationTokens := usage.ClaudeCacheCreation5mTokens + usage.ClaudeCacheCreation1hTokens
-	if splitCacheCreationTokens == 0 {
-		return usage.PromptTokensDetails.CachedCreationTokens
+	if total := usage.PromptTokensDetails.CachedCreationTokens; total > 0 {
+		return total
 	}
-	if usage.PromptTokensDetails.CachedCreationTokens > splitCacheCreationTokens {
-		return usage.PromptTokensDetails.CachedCreationTokens
-	}
-	return splitCacheCreationTokens
+	return usage.ClaudeCacheCreation5mTokens + usage.ClaudeCacheCreation1hTokens
 }
 
 func buildOpenAIStyleUsageFromClaudeUsage(usage *dto.Usage) dto.Usage {
