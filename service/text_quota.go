@@ -76,6 +76,28 @@ func (s *textQuotaSummary) hasBillableUsage() bool {
 	return s.TotalTokens > 0 || !s.ToolCallSurchargeQuota.IsZero()
 }
 
+// clampCacheBucketsToTotal keeps the per-TTL cache-creation buckets within the
+// authoritative total.
+//
+// Anthropic reports a total plus a TTL breakdown that must sum to it, and the
+// quota math multiplies the buckets by their respective ratios -- so a bucket
+// larger than the total charges tokens the caller never sent. That happens for
+// real: one upstream prepends its own system prompt and counts it in the buckets
+// without updating the total, breaking the identity by a fixed 1000 tokens on
+// roughly 13% of cache writes.
+//
+// The 1h bucket is preserved ahead of 5m because it is the more expensive tier;
+// shrinking it first would under-charge a legitimately mixed-TTL request.
+func clampCacheBucketsToTotal(total, tokens5m, tokens1h int) (int, int) {
+	if total <= 0 || tokens5m+tokens1h <= total {
+		return tokens5m, tokens1h
+	}
+	if tokens1h >= total {
+		return 0, total
+	}
+	return total - tokens1h, tokens1h
+}
+
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
 	if summary.CacheCreationTokens5m > 0 || summary.CacheCreationTokens1h > 0 {
 		splitCacheWriteTokens := summary.CacheCreationTokens5m + summary.CacheCreationTokens1h
@@ -259,8 +281,11 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
 	summary.CacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokensTotal()
-	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
+	summary.CacheCreationTokens5m, summary.CacheCreationTokens1h = clampCacheBucketsToTotal(
+		summary.CacheCreationTokens,
+		usage.ClaudeCacheCreation5mTokens,
+		usage.ClaudeCacheCreation1hTokens,
+	)
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
