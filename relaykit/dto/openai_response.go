@@ -269,12 +269,20 @@ type InputTokenDetails struct {
 // CacheCreationTokensTotal returns the cache-write token count regardless of
 // which field the upstream reported it in: Claude-derived conversions populate
 // CachedCreationTokens while OpenAI reports cache_write_tokens natively. Both
-// are billed at the cache-creation price; when both are present the larger
-// value wins so the same tokens are never double-counted. Negative upstream
-// values are clamped to zero so they can never lower a charge.
+// are billed at the cache-creation price. Negative upstream values are clamped
+// to zero so they can never lower a charge.
+//
+// When both are present they can disagree, and picking the larger one is wrong.
+// Anthropic's semantics make the total authoritative -- the per-TTL buckets that
+// feed CacheWriteTokens are its breakdown, so `total == 5m + 1h` must hold. Some
+// upstreams prepend their own system prompt and count it in the buckets without
+// updating the total; taking the maximum then charges the caller for a prefix
+// they never sent. Observed on one route as a fixed 1000-token gap on ~13% of
+// cache writes. Prefer the total, and fall back to the buckets only when the
+// upstream reported nothing there -- which is the OpenAI-native shape.
 func (d InputTokenDetails) CacheCreationTokensTotal() int {
 	total := d.CachedCreationTokens
-	if d.CacheWriteTokens > total {
+	if total <= 0 {
 		total = d.CacheWriteTokens
 	}
 	if total < 0 {
