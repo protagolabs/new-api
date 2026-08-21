@@ -1,5 +1,10 @@
 package xai
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 // Request/response shapes for xAI's asynchronous video generation API.
 //
 //	POST /v1/videos/generations -> {"request_id": "..."}
@@ -45,12 +50,37 @@ type pollResponse struct {
 	Model  string       `json:"model"`
 	Video  *videoResult `json:"video,omitempty"`
 	Usage  *usageInfo   `json:"usage,omitempty"`
-	Error  *struct {
-		Message string `json:"message"`
-		Code    string `json:"code"`
-	} `json:"error,omitempty"`
+	Error  *pollError   `json:"error,omitempty"`
 	// Some error paths return a bare reason string instead of the error object.
 	Reason string `json:"reason,omitempty"`
+}
+
+// pollError accepts both shapes xAI puts in this field: the documented object,
+// and a bare string.
+//
+// Declaring it as an object only is not a cosmetic problem. A string there makes
+// the whole poll response fail to unmarshal, so the task never reaches a terminal
+// state -- it is retried on every polling cycle indefinitely, and the caller sees
+// a job that neither succeeds nor fails. Seen in production on a real task that
+// retried every 45s until we noticed it in the logs.
+type pollError struct {
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+func (e *pollError) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '"' {
+		// A bare string carries no code, so it lands in Message where every
+		// caller of this type already looks.
+		return json.Unmarshal(trimmed, &e.Message)
+	}
+	// Alias to avoid recursing into this method.
+	type plain pollError
+	return json.Unmarshal(trimmed, (*plain)(e))
 }
 
 // metadataParams mirrors the fields callers may pass via `metadata`, which
