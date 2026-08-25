@@ -157,11 +157,18 @@ const MaxTaskDurationSeconds = 3600
 const AutoTaskDuration = -1
 
 // modelsAcceptingAutoDuration lists the model-name prefixes whose upstream
-// understands AutoTaskDuration. Keep this narrow: a model that is billed per
-// second of output has no meaningful "auto" to bill for, which is why only the
-// token-billed Dreamina family is here.
+// understands AutoTaskDuration. Keep this narrow -- a model whose upstream
+// rejects -1 is better off with a clear validation error than a request the
+// vendor fails asynchronously.
+//
+// Per-second models can appear here, but only if their adaptor pre-charges the
+// upstream duration ceiling and settles against reported usage afterwards: with
+// no length in the request there is nothing else to bill, and guessing low means
+// under-charging a full-length render. wan3.0-video does exactly that
+// (wan30BillableSeconds / Wan30SettleQuota).
 var modelsAcceptingAutoDuration = []string{
 	"dreamina-seedance-2-5",
+	"wan3.0-video",
 }
 
 // AcceptsAutoDuration reports whether a model may be given AutoTaskDuration.

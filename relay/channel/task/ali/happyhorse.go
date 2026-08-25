@@ -272,10 +272,13 @@ func atoiTrim(s string) (int, error) {
 }
 
 // AdjustBillingOnComplete settles a finished task against what the vendor
-// actually produced. Non-HappyHorse models return 0 and keep the pre-charge,
-// which is the behaviour they have always had.
+// actually produced. Models with no settlement of their own return 0 and keep
+// the pre-charge, which is the behaviour they have always had.
 func (a *TaskAdaptor) AdjustBillingOnComplete(task *model.Task, taskResult *relaycommon.TaskInfo) int {
-	return HappyHorseSettleQuota(task, taskResult)
+	if quota := HappyHorseSettleQuota(task, taskResult); quota > 0 {
+		return quota
+	}
+	return Wan30SettleQuota(task, taskResult)
 }
 
 // SettlesPerCallOnComplete opts into completion-time settlement even though

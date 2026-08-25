@@ -95,6 +95,14 @@ type AliUsage struct {
 	Duration   dto.IntValue `json:"duration,omitempty"`
 	VideoCount dto.IntValue `json:"video_count,omitempty"`
 	SR         dto.IntValue `json:"SR,omitempty"`
+
+	// Wan 3.0 reports the rendered length separately from the requested one.
+	// Under smart duration (-1) the request carries no length at all, making
+	// OutputVideoDuration the only field that knows what to bill.
+	OutputVideoDuration dto.IntValue `json:"output_video_duration,omitempty"`
+	InputVideoDuration  dto.IntValue `json:"input_video_duration,omitempty"`
+	FPS                 dto.IntValue `json:"fps,omitempty"`
+	Ratio               string       `json:"ratio,omitempty"`
 }
 
 type AliMetadata struct {
@@ -216,6 +224,19 @@ func ProcessAliOtherRatios(aliReq *AliVideoRequest) (map[string]float64, error) 
 		return map[string]float64{"resolution": ratio}, nil
 	}
 
+	// Wan 3.0 is per-second by tier like HappyHorse, and likewise absent from the
+	// Wan rate table below. Its tiers go through video_tier_ratio first so a
+	// repriced tier is a config change rather than a release.
+	if IsWan30(aliReq.Model) {
+		resolution := ""
+		if aliReq.Parameters != nil {
+			resolution = firstNonEmpty(aliReq.Parameters.Resolution, aliReq.Parameters.Size)
+		}
+		return map[string]float64{
+			"resolution": wan30TierRatio(aliReq.Model, resolution),
+		}, nil
+	}
+
 	otherRatios := make(map[string]float64)
 	aliRatios := map[string]map[string]float64{
 		"wan2.6-i2v": {
@@ -290,7 +311,21 @@ func isWan27I2VModel(model string) bool {
 // input.media` for every request. Confirmed against the live API -- the same
 // request with a hand-built input.media succeeds.
 func usesMediaProtocol(model string) bool {
-	return isWan27I2VModel(model) || IsHappyHorse(model)
+	return isWan27I2VModel(model) || IsHappyHorse(model) || IsWan30(model)
+}
+
+// mediaAudioType names the entry each family expects for audio inside
+// input.media -- wan2.7 drives lip-sync from it, wan3.0 treats it as one of
+// several omni references. Returns "" for families where audio's home is
+// unverified, leaving the caller's flat audio_url exactly where they put it.
+func mediaAudioType(model string) string {
+	switch {
+	case isWan27I2VModel(model):
+		return "driving_audio"
+	case IsWan30(model):
+		return "reference_audio"
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {
@@ -356,12 +391,12 @@ func normalizeMediaProtocolInput(aliReq *AliVideoRequest, req relaycommon.TaskSu
 				URL:  lastFrameURL,
 			})
 		}
-		// Audio is only known to ride input.media on wan2.7. Whether HappyHorse
-		// takes a driving_audio entry or the flat input.audio_url is untested, so
-		// leave its audio field exactly where the caller put it.
-		if audioURL != "" && wan27 {
+		// Audio rides input.media on wan2.7 and wan3.0 under different type names.
+		// Whether HappyHorse takes such an entry or the flat input.audio_url is
+		// untested, so leave its audio field exactly where the caller put it.
+		if audioType := mediaAudioType(aliReq.Model); audioURL != "" && audioType != "" {
 			aliReq.Input.Media = append(aliReq.Input.Media, AliVideoMedia{
-				Type: "driving_audio",
+				Type: audioType,
 				URL:  audioURL,
 			})
 		}
@@ -383,7 +418,7 @@ func normalizeMediaProtocolInput(aliReq *AliVideoRequest, req relaycommon.TaskSu
 	aliReq.Input.ImgURL = ""
 	aliReq.Input.FirstFrameURL = ""
 	aliReq.Input.LastFrameURL = ""
-	if wan27 {
+	if mediaAudioType(aliReq.Model) != "" {
 		aliReq.Input.AudioURL = ""
 	}
 	return nil
@@ -452,7 +487,10 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 	}
 
 	// 处理时长
-	if req.Duration > 0 {
+	// Accept any non-zero value, not just positives: -1 is the vendor's
+	// smart-duration sentinel, and filtering on > 0 dropped it here so a wan3.0
+	// caller asking for smart duration silently got a fixed 5 seconds.
+	if req.Duration != 0 {
 		aliReq.Parameters.Duration = req.Duration
 	} else if req.Seconds != "" {
 		seconds, err := strconv.Atoi(req.Seconds)
@@ -462,7 +500,11 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 			aliReq.Parameters.Duration = seconds
 		}
 	}
-	if aliReq.Parameters.Duration <= 0 {
+	// The sentinel survives only for models whose upstream understands it;
+	// anything else non-positive means "unset" and takes the 5s default.
+	if aliReq.Parameters.Duration <= 0 &&
+		!(aliReq.Parameters.Duration == relaycommon.AutoTaskDuration &&
+			relaycommon.AcceptsAutoDuration(upstreamModel)) {
 		aliReq.Parameters.Duration = 5 // 默认5秒
 	}
 
@@ -486,10 +528,13 @@ func (a *TaskAdaptor) convertToAliRequest(info *relaycommon.RelayInfo, req relay
 		return nil, err
 	}
 
-	// Applied last so it overrides the Wan-shaped resolution mapping above,
-	// including anything metadata set.
+	// Applied last so they override the Wan-shaped resolution mapping above,
+	// including anything metadata set. The two families are disjoint.
 	if IsHappyHorse(upstreamModel) {
 		applyHappyHorseParameters(aliReq, req.Size)
+	}
+	if IsWan30(upstreamModel) {
+		applyWan30Parameters(aliReq, req.Size)
 	}
 
 	return aliReq, nil
@@ -508,10 +553,21 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		return nil
 	}
 
+	// Smart duration carries no length, so pre-charge the upstream ceiling and
+	// let completion-time settlement refund the difference -- billing the 5s
+	// default instead would undercharge a 30s render, and passing -1 straight
+	// through would make the multiplier negative.
+	seconds := aliReq.Parameters.Duration
+	if seconds == relaycommon.AutoTaskDuration {
+		seconds = wan30BillableSeconds(seconds)
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
 	// metadata can override Duration past standard request validation;
 	// cap it because it is used as a billing multiplier.
 	otherRatios := map[string]float64{
-		"seconds": float64(min(aliReq.Parameters.Duration, relaycommon.MaxTaskDurationSeconds)),
+		"seconds": float64(min(seconds, relaycommon.MaxTaskDurationSeconds)),
 	}
 	ratios, err := ProcessAliOtherRatios(aliReq)
 	if err != nil {
