@@ -125,7 +125,12 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *taskdto.TaskError) {
 	// Accept only POST /v1/video/generations as "generate" action.
-	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate)
+	if taskErr = relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate); taskErr != nil {
+		return taskErr
+	}
+	// Resolve `asset://` references here, before the caller is pre-charged, so
+	// an id that is unknown or belongs to someone else costs them nothing.
+	return resolveAssetReferences(c, info)
 }
 
 // BuildRequestURL constructs the upstream URL.
@@ -211,6 +216,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	if err != nil {
 		return nil, err
 	}
+	// req is our own copy; rewriting it here leaves the stored request (and so
+	// the task record the customer polls) holding the ids they gave us.
+	applyResolvedAssetReferences(c, &req)
 
 	body, err := a.convertToRequestPayload(&req)
 	if err != nil {
