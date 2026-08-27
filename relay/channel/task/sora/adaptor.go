@@ -132,7 +132,9 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 		seconds = 4
 	}
 
-	size := req.Size
+	// Expand a tier name first: videoTierFromSize splits on "x", so a bare
+	// "720p" would find no tier and silently bill at the 480p base rate.
+	size := normalizeVideoSize(req.Size)
 	if size == "" {
 		size = "720x1280"
 	}
@@ -217,6 +219,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		var bodyMap map[string]interface{}
 		if err := common.Unmarshal(cachedBody, &bodyMap); err == nil {
 			bodyMap["model"] = info.UpstreamModelName
+			if rawSize, ok := bodyMap["size"].(string); ok {
+				bodyMap["size"] = normalizeVideoSize(rawSize)
+			}
 			if newBody, err := common.Marshal(bodyMap); err == nil {
 				return bytes.NewReader(newBody), nil
 			}
@@ -237,6 +242,9 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 				continue
 			}
 			for _, v := range values {
+				if key == "size" {
+					v = normalizeVideoSize(v)
+				}
 				writer.WriteField(key, v)
 			}
 		}
